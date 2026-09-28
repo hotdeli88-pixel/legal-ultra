@@ -6,7 +6,7 @@
 |---|---|---|
 | `legalize-kr-history/` | [legalize-kr/legalize-kr](https://github.com/legalize-kr/legalize-kr) 전체 이력(HEAD 3969940, 2026-09-23) | 11개 파일의 실제 판본 53개. 조문은 테스트에 쓰는 것만, 부칙은 필요한 블록의 시행일 조문까지만 발췌. `manifest.json` 순서대로 임시 git 저장소에 커밋해 재생(`tests/_util.history_repo`) |
 | `legalize-kr/` | 위와 같음 | 각 파일의 **최신 판본**만(이력 없는 미러 모드 테스트용) |
-| `precedent-kr/` | [legalize-kr/precedent-kr](https://github.com/legalize-kr/precedent-kr) | 프론트매터·판시사항·판결요지는 그대로, `판례내용`은 앞 12줄만 |
+| `precedent-kr/` | [legalize-kr/precedent-kr](https://github.com/legalize-kr/precedent-kr) | 프론트매터·판시사항·판결요지는 그대로, `판례내용`은 앞 12줄 + 끝의 재판부 서명 줄(전원합의체 판정용) |
 | `drf/` | [rubatoyd/law-openapi-mcp](https://github.com/rubatoyd/law-openapi-mcp) 실측 응답(MIT) | `drf/README.md` 참조 |
 
 법령 원문은 대한민국 정부 공공저작물, legalize-kr 저장소 구조·메타데이터는 MIT 입니다.

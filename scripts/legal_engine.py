@@ -562,20 +562,58 @@ class StatuteMirror:
         fm, body = split_frontmatter(r.stdout)
         return tuple(parse_articles(body)), parse_frontmatter_text(fm), body
 
+    def amendment_problem(self, doc: LawDoc, prom: date, number: Optional[str] = None) -> Optional[str]:
+        """구법 표기 '(YYYY. M. D. 법률 제N호로 개정되기 전의 것)'의 개정이 실재하는지. 문제가 없거나 확인할 수 없으면 None.
+        최신 공포본의 부칙 목록(전부개정 이후 모든 개정·타법개정)으로 보고, 그보다 오래된 날짜는 판본 이력으로 본다."""
+        from temporal import parse_buchik
+        text = self._read(doc.rel) or ""
+        known = [(b.promulgated, b.number.lstrip("0"), b.main_effective)
+                 for b in parse_buchik(split_frontmatter(text)[1], doc.title)]
+        earliest = min((d for d, _, _ in known), default=None)
+        if earliest is None or prom < earliest:
+            commits = self.version_commits(doc)
+            if len(commits) < 2:
+                return None                                  # 이력 없음 — 확인 불가(대조 단계가 판단)
+            known = []
+            for c in commits:
+                got = self.load_version(doc.rel, c)
+                if got is None:
+                    return None
+                meta = got[1]
+                d = parse_date(meta.get("공포일자"))
+                if d:
+                    known.append((d, str(meta.get("공포번호") or "").lstrip("0"), parse_date(meta.get("시행일자"))))
+                if d and d < prom:
+                    break
+            else:
+                if known and prom < min(d for d, _, _ in known):
+                    return None                              # 이력의 처음보다 앞 — 확인 불가
+        same = [no for d, no, _ in known if d == prom]
+        if not same:
+            if any(e == prom for _, _, e in known):
+                return None                                  # 공포일 대신 시행일로 적은 표기 — 판본은 특정된다
+            near = sorted({d for d, _, _ in known}, key=lambda d: abs((d - prom).days))[:3]
+            return (f"「{doc.title}」은(는) {prom.isoformat()}에 공포된 개정이 없음 — 구법 판본 표기의 개정일을 확인하세요"
+                    + (f"(가까운 공포일: {', '.join(d.isoformat() for d in sorted(near))})" if near else ""))
+        if number and any(same) and number.lstrip("0") not in same:
+            return f"{prom.isoformat()} 개정의 공포번호는 제{', '.join(x for x in same if x)}호 — 인용한 제{number}호와 다름"
+        return None
+
     def unit_status(self, doc: LawDoc, jo: int, sub: Optional[int], hang: Optional[int], ho: Optional[str],
                     mok: Optional[str], as_of: date):
         """인용 단위의 기준일 시행 상태. 전체 이력이 있으면 정밀 판정, 없으면 fail-closed 추정."""
         from temporal import parse_buchik, unit_status_heuristic, unit_status_precise
         commits = self.version_commits(doc)
         if len(commits) >= 2:
-            st = unit_status_precise(commits, lambda c: self.load_version(doc.rel, c), as_of, jo, sub, hang, ho, mok)
+            st = unit_status_precise(commits, lambda c: self.load_version(doc.rel, c), as_of, jo, sub, hang, ho, mok,
+                                     own_title=doc.title)
             if st is not None:
                 return st
         arts, meta = self._articles_for(doc.rel)
         text = self._read(doc.rel) or ""
         body = split_frontmatter(text)[1]
         art = next((a for a in arts if a.jo == jo and a.sub == sub), None)
-        st = unit_status_heuristic(art, parse_buchik(body), doc.promulgated, doc.effective, as_of, hang, ho, mok)
+        st = unit_status_heuristic(art, parse_buchik(body, doc.title), doc.promulgated, doc.effective, as_of, hang, ho, mok)
         if len(commits) >= 2:
             st.notes.insert(0, "판본 이력으로 판정하지 못해(지연 내려받기 실패 등) 최신 공포본 기준으로 추정")
         return st

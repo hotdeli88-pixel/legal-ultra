@@ -4,7 +4,7 @@ description: "대한민국 법률 검토·자문 에이전트 팀 스킬(v2, 구
 license: MIT
 compatibility: "Python 3.10+ (표준 라이브러리만), git. 선택: legalize-kr/precedent-kr 로컬 미러, law.go.kr 접속(DRF API). Claude Code(Agent 도구로 서브에이전트), 기타 에이전트 런타임(서브에이전트 없으면 순차 역할 수행)."
 metadata:
-  version: "2.1.0"
+  version: "2.2.0"
   supersedes: "law 1.0.0, legal-ultra 1.0.0"
   architecture: "source-grounded blackboard swarm with enforced citation gates"
 ---
@@ -28,8 +28,8 @@ python3 scripts/legal.py status
 | 법제처 DRF API (`LAW_OPENAPI_OC`) | 헌재 결정·법령해석례·부처 해석·위원회 결정·행정규칙·자치법규·3단비교·교차확인 | 해당 자료는 `UNVERIFIABLE` |
 
 출처가 없으면 사용자에게 알리고 `python3 scripts/legal.py setup`(미러 설치 안내·실행)을 제안한다. 설치·환경변수·한계는 `references/sources.md`.
-`status` 가 "판본 이력 없음"이면 기준일 판정이 개정표시 기준 추정이라 시행 전 개정이 걸린 조항은 `UNVERIFIABLE` 가 된다 —
-정밀 판정에는 `setup`(기본: 전체 이력 부분 클론, 약 540MB)이 필요하다고 알린다.
+`status` 가 "판본 이력 없음"이면 최신 공포본이 기준일에 시행 중이고 먼저 공포된 개정도 모두 시행된 법령만 판정하고 나머지는
+`UNVERIFIABLE` 가 된다 — 정밀 판정에는 `setup`(기본: 전체 이력 부분 클론, 약 540MB)이 필요하다고 알린다.
 
 ## 1. 철칙 — 모든 역할 공통
 
@@ -111,7 +111,7 @@ python3 scripts/legal.py constitutional 2013헌마576                     # 헌�
 python3 scripts/legal.py interpretation "개인정보" [--target moelCgmExpc] # 법제처·부처 해석(DRF)
 python3 scripts/legal.py decision ppc "CCTV"                            # 위원회 결정문(DRF)
 python3 scripts/legal.py research --keywords 통상임금 재직조건            # 후보 출처 수집(분석 없음)
-python3 scripts/legal.py verify draft.md [--as-of D] [--evidence …]     # 인용 검증: 0=PASS 1=FAIL 2=INCOMPLETE
+python3 scripts/legal.py verify draft.md [--as-of D] [--evidence …]     # 인용 검증: 0=PASS 1=FAIL 2=INCOMPLETE 3=입력 오류
 ```
 
 ## 6. 산출물

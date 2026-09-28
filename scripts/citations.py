@@ -26,6 +26,8 @@ from __future__ import annotations
 import json
 import re
 import sys
+from bisect import bisect_left, bisect_right
+from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
@@ -65,6 +67,7 @@ class StatuteCite:
     quote_units: List[Unit] = field(default_factory=list)   # 인용문을 대조할 단위(나열 인용이면 전부)
     historical: bool = False
     hist_date: Optional[date] = None      # '(YYYY. M. D. … 개정되기 전의 것)' — 그 전날 시행 판본으로 대조
+    hist_no: Optional[str] = None         # 그 개정의 공포번호('법률 제16270호')
     future_context: bool = False
     law_candidates: List[str] = field(default_factory=list)
     law_origin: str = "explicit"          # explicit | continuation | anaphora | alias | none
@@ -93,7 +96,7 @@ class StatuteCite:
 
     def key(self) -> Tuple:
         return ("S", normalize_law_name(self.law or ""), self.jo, self.sub, self.hang, self.ho, self.mok,
-                self.claimed_title, tuple(self.quotes), tuple(self.quote_units), self.historical, self.hist_date,
+                self.claimed_title, tuple(self.quotes), tuple(self.quote_units), self.historical, self.hist_date, self.hist_no,
                 self.future_context, self.problem, self.law_origin if not self.law else "")
 
 
@@ -209,6 +212,11 @@ _ALIAS_DEF_RE = re.compile(
     r"(?:[「『](?P<b>[^」』]{2,60})[」』]|(?P<p>[가-힣A-Za-z0-9ㆍ·]+(?:\s+[가-힣A-Za-z0-9ㆍ·]+){0,8}?(?:법률|법|령|규칙|규정)))"
     r"\s*\((?:[^()]{0,80}?[,，]\s*)?이하\s*[‘'\"“]?(?P<alias>[가-힣A-Za-z0-9ㆍ· ]{1,20}?)[’'\"”]?\s*(?:이?라|로)\s*(?:한다|함|칭한다)\s*\)")
 _TITLE_RE = re.compile(r"^\s*\(([^()]{1,40})\)")
+# 조문 뒤 괄호 중 제목이 아닌 것(판본·약칭·참조·단위 표시). 나머지는 제목 주장으로 보고 실제 제목과 대조한다
+# (예전의 단어 목록 — '위반'·'삭제'·'개정'… — 은 '(해고 금지 위반의 효과)' 같은 가짜 제목까지 놓쳤다)
+_NOT_TITLE_RE = re.compile(
+    r"\d{4}|이하\s*[‘'\"“「]?|개정되기|개정된\s*것|전부개정|참조|중략|생략|현행|구법|신법|시행\s*(?:예정|전)|[=:;,]|"
+    r"^\s*(?:(?:제\s*\d+\s*(?:항|호)(?:의\s*\d+)?|[가-하]\s*목|단서|본문|전단|후단|후문|각\s*호\s*외의|부분|및|ㆍ|·)\s*)+$")
 _HIST_PAREN_RE = re.compile(
     r"(?P<d>\d{4}\s*\.\s*\d{1,2}\s*\.\s*\d{1,2}\s*\.?)[^()]{0,50}?"
     r"(?P<kind>(?:전부\s*)?개정되기\s*전|폐지되기\s*전|(?:전부\s*)?개정된\s*것)")
@@ -218,6 +226,7 @@ _CONNECTOR_TAIL_RE = re.compile(
     r"(?<=[법률령칙정례])\s*(?:에|이|가)?\s*(?:따르면|의하면|따라|의하여|의한|따른|규정된|정한|정하는|규정한|규정하는)$")
 _SENT_END_RE = re.compile(r"(?<!\d)[.!?。](?=\s|$)")
 _FUTURE_CTX_RE = re.compile(r"시행\s*예정|신설\s*예정|개정\s*예정|미시행|시행될|시행되는\s*날|공포\s*후\s*\d+\s*(?:일|개월|년)")
+_PRESENT_CLAIM_RE = re.compile(r"현재\s*시행\s*중|시행\s*중(?!이\s*아|이지\s*않|이\s*되)|현행(?!\s*법\s*아래)|시행되고\s*있")
 _FUTURE_NEG_RE = re.compile(r"^\s*(?:이|인|이다|이라)?\s*(?:아닌|아니|아님|없는|없이)")
 
 # 비(非)법령 문서: 계약서·취업규칙 등의 조항 번호는 법령 인용이 아니다
@@ -245,10 +254,14 @@ _DATE_PAT = r"\d{4}\s*\.\s*\d{1,2}\s*\.\s*\d{1,2}\s*\.?|\d{4}\s*년\s*\d{1,2}\s*
 _CODE_ALT = "|".join(re.escape(c) for c in CASE_CODES)
 _CASE_RE = re.compile(
     rf"(?:{_COURT_RE}\s*)?"
-    rf"(?:(?P<date>{_DATE_PAT})\s*(?:선고|자)?\s*)?"
-    r"(?:(?<=선고)|(?<=자)|(?<![0-9가-힣A-Za-z]))"
-    rf"(?P<no>(?:(?:19|20|42|43)\d{{2}}|\d{{2}})(?:{_CODE_ALT})\d{{1,7}})(?![0-9])"
+    rf"(?:(?P<date>{_DATE_PAT})\s*(?:(?:선고|자|결정)\s*(?:된|한|하였던|했던)?\s*,?\s*)?)?"
+    r"(?:(?<=선고)|(?<=자)|(?<=된)|(?<=한)|(?<![0-9가-힣A-Za-z]))"
+    rf"(?P<no>(?:(?:19|20|42|43)\d{{2}}|\d{{2}})(?:{_CODE_ALT})\d{{1,7}}|(?:19|20)\d{{2}}\s?(?:{_CODE_ALT})\s?\d{{1,7}}(?=\s*(?:[,)]|판결|결정|전원합의체|사건|$)))(?![0-9])"
     r"(?:\s*(?P<enbanc>전원합의체))?")
+# '대법원 2021다219529 판결(2021. 9. 17. 선고)' — 사건번호 뒤 괄호의 선고일
+_CASE_TAIL_DATE_RE = re.compile(rf"\s*\(\s*(?:{_COURT_RE}\s*)?(?P<date>{_DATE_PAT})\s*(?:선고|자|결정)?\s*\)")
+# '… 선고 2021다219529, 219536 판결' — 앞 번호의 연도·부호를 잇는 병합 약식 번호
+_CASE_SHORT_MERGE_RE = re.compile(r"\s*(?:,|ㆍ|·|및)\s*(?P<n>\d{1,7})(?![0-9가-힣])(?=\s*(?:,|ㆍ|·|및|판결|결정|\(|전원합의체|$))")
 _AUTH_RE = re.compile(r"(?:법제처|법령\s*해석례?|해석례|안건번호|안건)[^\n]{0,24}?(?<![\d-])(?P<no>\d{2}-\d{3,4})(?![\d-])")
 _MINISTRY_RE = re.compile(r"(?<![가-힣])(?P<no>[가-힣]{2,15}(?:과|팀)\s*-\s*\d{2,6}|(?:근기|임금|근로기준|노사)\s*\d{5}\s*-\s*\d{2,6})(?!\d)")
 _MINISTRY_CTX_RE = re.compile(r"행정해석|회시|질의회시|해석|고용노동부|노동부|지침|부처|유권해석")
@@ -261,10 +274,13 @@ _PARTY_VERB_RE = re.compile(r"주장|진술|항변|증언|말하|말했|말한|�
                             r"녹취|폭언|욕설|소리치|외치|외쳤|협박|질문|물었|대답|답했|적었|적혀|적힌|쓰여|쓰인|게시|공지")
 _PARTY_SUBJ_RE = re.compile(r"(?:원고|피고|신청인|피신청인|청구인|피청구인|피해자|가해자|근로자|사용자|회사|직원|상대방|증인|피의자|피고인|고소인|"
                             r"진정인|의뢰인|당사자|대표|팀장|상사|동료|[A-Z]|[甲乙丙丁])\s*(?:측)?(?:은|는|이|가)(?![가-힣])")
-_BODY_CTX_RE = re.compile(r"이유|설시|판단\s*부분|판결문|결정문|본문|원심|사실관계|인정\s*사실")
+_BODY_CTX_RE = re.compile(r"(?:판결|결정)?\s*이유\s*(?:에서|중|부분|를\s*보면|에\s*(?:따르면|의하면|서|는|도))|이유\s*설시|설시\s*(?:에서|중|부분|하였|했|한)|"
+                          r"판단\s*부분|판결문\s*(?:에서|중|에는|의\s*(?:이유|판단))|결정문\s*(?:에서|중|에는)|본문\s*(?:에서|중)|사실관계|인정\s*사실")
 _ANAPH_SUBJ_RE = re.compile(
     r"(?:위|이|같은|동|해당|앞의|앞서\s*본|상기|그)\s*(?P<k>대법원\s*판결|전원합의체\s*판결|판결|결정|판례|해석례|해석|회신|회답|"
     r"법률\s*조항|조항|조문|규정|조|항)(?![가-힣]{2})")
+_SENT_LEAD_RE = re.compile(r"(?:그러므로|따라서|즉|이에|결국|요컨대|곧|이는|이를\s*보면|다시\s*말해|말하자면|정리하면|그\s*내용은|"
+                            r"이\s*(?:조항|규정|조문)은|위\s*(?:조항|규정|조문)은)?\s*[,:]?")
 _NEXT_LINE_LEAD_RE = re.compile(r"(?:다음과\s*같|아래와\s*같)|[:：]\s*$")
 _CITE_LIKE_RE = re.compile(r"제\s*\d+\s*조|\d{2,4}[가-힣]{1,3}\d{1,7}")
 # '같은 법'의 선행어가 될 수 있는 본문 속 법령명(낫표 없이 쓴 것). '방법·위법·불법' 같은 일반어는 제외
@@ -276,6 +292,28 @@ _NOT_LAW_WORDS = re.compile(r"(?:방법|불법|위법|적법|편법|입법|사�
 # ---------------------------------------------------------------------------
 # 도우미
 # ---------------------------------------------------------------------------
+
+
+_SIGNATURE_RE = re.compile(r"(?m)^[ \t]*(?P<head>대법원장|대법관)[ \t]+(?P<rest>[^\n]*\(\s*재판장\s*\)[^\n]*)$")
+_OPINION_LABEL_RE = re.compile(r"\[(?:다수의견|[^\[\]\n]{0,80}(?:반대의견|별개의견|보충의견))\]")
+
+
+def en_banc_status(text: str, ref_cases: str = "") -> Optional[bool]:
+    """판결문 **자체의** 재판부로 본 전원합의체 여부. 이유 중에 다른 전원합의체 판결을 인용한 것은 근거가 아니다.
+    ① 서명란: 대법원장이 재판장이거나 대법관 7인 이상 → 전원합의체, 4인 소부 → 아님(실측: 2018다248909 '대법원장 김명수(재판장) …' 13인,
+    2023다216777 '대법관 신숙희(재판장) 노태악(주심) 서경환 마용주') ② 의견 표시('[다수의견]'·'[… 반대의견]') ③ 참조판례의 '(변경)'
+    (판례 변경은 전원합의체만 — 법원조직법 제7조제1항제3호). 근거가 없으면 None."""
+    sigs = list(_SIGNATURE_RE.finditer(text or ""))
+    if sigs:
+        m = sigs[-1]
+        if m.group("head") == "대법원장":
+            return True
+        return len(re.findall(r"[가-힣]{2,5}", re.sub(r"\([^)]*\)", " ", m.group("rest")))) >= 7
+    if _OPINION_LABEL_RE.search(text or ""):
+        return True
+    if re.search(r"\(\s*변경\s*\)", ref_cases or ""):
+        return True
+    return None
 
 
 def _ho_of(m) -> Optional[str]:
@@ -309,18 +347,27 @@ def norm_court(s: Optional[str]) -> str:
     return t
 
 
+@lru_cache(maxsize=8)
+def _sent_marks(masked: str) -> Tuple[List[int], List[int]]:
+    """문장 끝(마침표류 다음 위치)·줄바꿈 위치 — 문서마다 한 번만 계산(긴 문서에서 매번 처음부터 훑던 제곱 시간 제거)."""
+    return [m.end() for m in _SENT_END_RE.finditer(masked)], [m.start() for m in re.finditer("\n", masked)]
+
+
 def _sentence_bounds(masked: str, pos: int) -> Tuple[int, int]:
     """pos 가 속한 문장의 [시작, 끝). 문장 경계 = 마침표류 또는 줄바꿈(따옴표 안은 가려진 텍스트 기준)."""
-    start = 0
-    for m in _SENT_END_RE.finditer(masked, 0, pos):
-        start = m.end()
-    nl = masked.rfind("\n", 0, pos)
-    start = max(start, nl + 1)
-    m = _SENT_END_RE.search(masked, pos)
-    end = m.end() if m else len(masked)
-    nl2 = masked.find("\n", pos)
-    if nl2 >= 0:
-        end = min(end, nl2)
+    ends, nls = _sent_marks(masked)
+    i = bisect_right(ends, pos) - 1
+    start = ends[i] if i >= 0 else 0
+    if pos > 0 and masked[pos - 1] in ".!?。" and not (pos > 1 and masked[pos - 2].isdigit()):
+        start = pos                              # 바로 앞 글자가 마침표(인용 위치에서 문장이 끝남)
+    k = bisect_left(nls, pos) - 1
+    if k >= 0:
+        start = max(start, nls[k] + 1)
+    j = bisect_left(ends, pos + 1)
+    end = ends[j] if j < len(ends) else len(masked)
+    k2 = bisect_left(nls, pos)
+    if k2 < len(nls):
+        end = min(end, nls[k2])
     return start, end
 
 
@@ -329,7 +376,32 @@ def _sentence_bounds(masked: str, pos: int) -> Tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 
-def _inside(pos: int, spans: Sequence[QuoteSpan]) -> Optional[QuoteSpan]:
+class _SpanIndex:
+    """구간 목록에서 위치를 담은 구간(시작이 가장 앞선 것)을 로그 시간에 찾는다 — 겹치거나 중첩돼도 된다."""
+    __slots__ = ("starts", "segs")
+
+    def __init__(self, spans) -> None:
+        segs: List[Tuple[int, int, object]] = []
+        for sp in sorted(spans, key=lambda x: (x.start, -x.end)):
+            st = sp.start
+            if segs and st < segs[-1][1]:
+                if sp.end <= segs[-1][1]:
+                    continue                     # 앞 구간 안에 통째로 든 구간
+                st = segs[-1][1]                 # 걸친 구간은 앞 구간 뒤쪽만
+            segs.append((st, sp.end, sp))
+        self.segs = segs
+        self.starts = [a for a, _, _ in segs]
+
+    def find(self, pos: int):
+        i = bisect_right(self.starts, pos) - 1
+        if i >= 0 and pos < self.segs[i][1]:
+            return self.segs[i][2]
+        return None
+
+
+def _inside(pos: int, spans) -> Optional[QuoteSpan]:
+    if isinstance(spans, _SpanIndex):
+        return spans.find(pos)
     for s in spans:
         if s.start <= pos < s.end:
             return s
@@ -339,41 +411,37 @@ def _inside(pos: int, spans: Sequence[QuoteSpan]) -> Optional[QuoteSpan]:
 def find_quote_spans(text: str) -> List[QuoteSpan]:
     """인용문 후보 구간. “…”(균형·중첩), "…"(문단 안 짝), ‘…’/'…'(정규화 12자 이상). 블록 인용(>)은 연결 단계에서 판단."""
     spans: List[QuoteSpan] = []
-    i = 0
-    n = len(text)
-    while True:
-        j = text.find("“", i)
-        if j < 0:
-            break
-        depth, k, end = 0, j, -1
-        limit = min(n, j + 4000)
-        while k < limit:
-            ch = text[k]
-            if ch == "“":
-                depth += 1
-            elif ch == "”":
-                depth -= 1
-                if depth == 0:
-                    end = k
-                    break
-            elif ch == "\n" and text.startswith("\n\n", k):
-                break                      # 닫히지 않은 따옴표는 문단을 넘지 않는다
-            k += 1
-        if end < 0:
-            i = j + 1
-            continue
-        spans.append(QuoteSpan(j, end + 1, text[j + 1:end], "curly"))
-        i = end + 1
+    # “…”: 한 번 훑으며 짝을 맞춘다(스택). 닫히지 않은 따옴표는 문단을 넘지 않고, 4,000자를 넘는 짝은 인용문으로 보지 않는다.
+    stack: List[int] = []
+    pairs: List[Tuple[int, int]] = []
+    for m in re.finditer(r"[“”]|\n\n", text):
+        ch = m.group(0)
+        if ch == "“":
+            stack.append(m.start())
+        elif ch == "”":
+            if stack:
+                o = stack.pop()
+                if m.start() - o < 4000:
+                    pairs.append((o, m.start()))
+        else:
+            stack.clear()
+    last_end = -1
+    for o, e in sorted(pairs):
+        if o > last_end:                       # 바깥 짝만(안쪽 따옴표는 그 인용문의 일부)
+            spans.append(QuoteSpan(o, e + 1, text[o + 1:e], "curly"))
+            last_end = e
     # "…" : 곧은 따옴표는 문단 안에서 순서대로 짝짓는다(“…” 안의 것은 그 인용문의 일부)
+    curly_ix = _SpanIndex(spans)
     para_start = 0
     for para in re.split(r"(\n\s*\n)", text):
-        pos = [para_start + m.start() for m in re.finditer('"', para) if not _inside(para_start + m.start(), spans)]
+        pos = [para_start + m.start() for m in re.finditer('"', para) if not curly_ix.find(para_start + m.start())]
         for a, b in zip(pos[0::2], pos[1::2]):
             spans.append(QuoteSpan(a, b + 1, text[a + 1:b], "straight"))
         para_start += len(para)
     for rx in (re.compile(r"‘([^’\n]{1,800})’"), re.compile(r"(?<![A-Za-z])'([^'\n]{1,800})'(?![A-Za-z])")):
+        taken = _SpanIndex(spans)
         for m in rx.finditer(text):
-            if _inside(m.start(), spans) or len(normalize_for_match(m.group(1))) < 12:
+            if taken.find(m.start()) or len(normalize_for_match(m.group(1))) < 12:
                 continue
             spans.append(QuoteSpan(m.start(), m.end(), m.group(1), "single"))
     spans.sort(key=lambda s: s.start)
@@ -427,6 +495,7 @@ class _LawRef:
     cands: List[str] = field(default_factory=list)
     hist: bool = False
     hist_date: Optional[date] = None
+    hist_no: Optional[str] = None
     hist_note: str = ""
     origin: str = "none"     # explicit | anaphora | alias | nonlaw | none
     token: str = ""
@@ -461,6 +530,8 @@ def _lookback_law(text: str, start: int, floor: int, alias_at: Callable[[str, in
             d = parse_date(hm.group("d"))
             if d and "전" in hm.group("kind"):
                 ref.hist_date = d
+                nm = re.search(r"(?:법률|대통령령|총리령|[가-힣]{1,12}부령|[가-힣]{1,12}규칙)\s*제\s*(\d+)\s*호", pm.group(1))
+                ref.hist_no = nm.group(1) if nm else None
             ref.hist_note = pm.group(1).strip()
         lb = lb[:pm.start()].rstrip()
     if not lb:
@@ -530,15 +601,19 @@ def extract_all(text: str) -> Extraction:
     spans = find_quote_spans(text)
     # 앞 줄이 '다음과 같이 …:'이고 인용 표기가 있는 블록 인용(>)은 그 자체가 하나의 인용문
     blocks = [b for b in _block_quotes(text) if _block_lead(text, b)]
-    spans = [s for s in spans if not any(b.start <= s.start < b.end for b in blocks)] + blocks
+    block_ix = _SpanIndex(blocks)
+    spans = [s for s in spans if not block_ix.find(s.start)] + blocks
     spans.sort(key=lambda s: s.start)
     qualifying = [s for s in spans if len(normalize_for_match(s.text)) >= (12 if s.kind == "single" else 6)]
     masked = _mask(text, qualifying)
+    q_ix = _SpanIndex(qualifying)
+    q_ends = sorted(s.end for s in qualifying)
 
     # ---- 약칭 정의(위치 기준: 정의 이후에만, 나중 정의가 앞 정의를 대체) ----
     alias_defs: List[Tuple[int, str, List[str]]] = []
+    nonstraight_ix = _SpanIndex([q for q in qualifying if q.kind != "straight"])
     for am in _ALIAS_DEF_RE.finditer(text):
-        if _inside(am.start(), [q for q in qualifying if q.kind != "straight"]):
+        if nonstraight_ix.find(am.start()):
             continue
         alias = re.sub(r"\s+", " ", am.group("alias").strip())
         if am.group("b"):
@@ -547,19 +622,25 @@ def extract_all(text: str) -> Extraction:
             toks = am.group("p").split()
             alias_defs.append((am.end(), alias, [" ".join(toks[i:]) for i in range(len(toks)) if toks[i] not in _STOP_TOKENS]))
 
+    alias_ix: Dict[str, Tuple[List[int], List[List[str]]]] = {}
+    for p_, a_, c_ in sorted(alias_defs, key=lambda x: x[0]):
+        ps, cs = alias_ix.setdefault(a_.replace(" ", ""), ([], []))
+        ps.append(p_)
+        cs.append(c_)
+
     def alias_at(token: str, pos: int) -> Optional[List[str]]:
-        best = None
-        for p, a, c in alias_defs:
-            if p <= pos and (a == token or a.replace(" ", "") == token.replace(" ", "")):
-                best = c
-        return best
+        hit = alias_ix.get(token.replace(" ", ""))
+        if not hit:
+            return None
+        i = bisect_right(hit[0], pos) - 1           # 위치 이전의 가장 나중 정의
+        return hit[1][i] if i >= 0 else None
 
     # ---- 판례 ----
     cases: List[CaseCite] = []
     case_spans: List[Tuple[int, int]] = []
     prev_case: Optional[CaseCite] = None
     for m in _CASE_RE.finditer(text):
-        no = m.group("no")
+        no = re.sub(r"\s+", "", m.group("no"))
         court = m.group("court")
         if court in ("대판",):
             court = "대법원"
@@ -571,13 +652,33 @@ def extract_all(text: str) -> Extraction:
             if not prev_case.has_tail:
                 decided = prev_case.decided     # '… 선고 2015다57904, 2015다57911 판결' — 같은 선고의 병합 사건
         end = m.end()
+        # 병합 약식 번호('2021다219529, 219536') — 앞 번호의 연도·부호를 이어받은 별개 사건번호로 검증
+        merged: List[Tuple[str, int, int]] = []
+        pm = re.match(r"((?:19|20|42|43)\d{2}|\d{2})(\D+?)\d+$", no)
+        while pm:
+            sm = _CASE_SHORT_MERGE_RE.match(text, end)
+            if not sm:
+                break
+            merged.append((pm.group(1) + pm.group(2) + sm.group("n"), sm.start("n"), sm.end("n")))
+            end = sm.end()
         tm = re.match(r"\s*(판결|결정|판례|심판|명령)", text[end:end + 12])
         if tm:
             end += tm.end()
+        dm = _CASE_TAIL_DATE_RE.match(text, end)
+        if dm:
+            if decided is None:
+                decided = parse_date(dm.group("date"))
+            if court is None and dm.group("court"):
+                court = dm.group("court")
+            end = dm.end()
+        en_banc = bool(m.group("enbanc")) or bool(re.match(r"\s*전원합의체", text[end:end + 10]))
         c = CaseCite(raw=text[m.start():end].strip(), start=m.start(), end=end, case_no=no, court=court,
-                     decided=decided, en_banc=bool(m.group("enbanc")), has_tail=bool(tm))
+                     decided=decided, en_banc=en_banc, has_tail=bool(tm))
         cases.append(c)
         case_spans.append((m.start(), end))
+        for mno, ms, me in merged:
+            cases.append(CaseCite(raw=text[ms:me], start=ms, end=me, case_no=mno, court=court, decided=decided,
+                                  en_banc=en_banc, has_tail=bool(tm)))
         prev_case = c
 
     # ---- 해석례 ----
@@ -593,13 +694,20 @@ def extract_all(text: str) -> Extraction:
         auths.append(AuthorityCite(raw=m.group(0).strip(), start=m.start(), end=m.end(),
                                    agenda_no=re.sub(r"\s+", "", m.group("no")), target="ministry", ministry=True))
 
+    case_ix = _SpanIndex([QuoteSpan(a, b, "", "case") for a, b in case_spans])
+    case_ends = sorted(e for _, e in case_spans)
+
     def in_case(pos: int) -> bool:
-        return any(s <= pos < e for s, e in case_spans)
+        return case_ix.find(pos) is not None
+
+    def max_le(sorted_vals: List[int], x: int) -> int:
+        i = bisect_right(sorted_vals, x) - 1
+        return sorted_vals[i] if i >= 0 else 0
 
     # ---- 법령 언급(‘같은 법’의 선행어) ----
     mentions: List[Tuple[int, str, List[str]]] = []
     for bm in re.finditer(r"[「『]([^」』]{2,60})[」』]", text):
-        if not _inside(bm.start(), qualifying):
+        if not q_ix.find(bm.start()):
             mentions.append((bm.start(), bm.group(1).strip(), [bm.group(1).strip()]))
     for pm_ in _PROSE_LAW_RE.finditer(masked):
         n = pm_.group("n")
@@ -610,6 +718,8 @@ def extract_all(text: str) -> Extraction:
         mentions.append((pm_.start(), n, [n]))
     for p, _a, c in alias_defs:
         mentions.append((p, c[0], list(c)))
+    mentions_sorted = sorted(mentions, key=lambda x: x[0])
+    mention_pos = [x[0] for x in mentions_sorted]
 
     def antecedent(pos: int, prefix: str) -> Optional[Tuple[str, List[str]]]:
         # '근로기준법 및 같은 법 시행령' — 바로 앞 나열의 법령명
@@ -619,10 +729,16 @@ def extract_all(text: str) -> Extraction:
             if sub.origin in ("explicit", "alias") and sub.name:
                 return sub.name, sub.cands
         best = None
-        pool = mentions + [(s.start, s.law, s.law_candidates) for s in statutes if s.law and not s.in_quote]
-        for p, name, cands in pool:
-            if p < pos and (best is None or p >= best[0]):
-                best = (p, name, cands)
+        i = bisect_left(mention_pos, pos) - 1
+        if i >= 0:
+            best = mentions_sorted[i]
+        for n_, s_ in enumerate(reversed(statutes)):   # 조문 목록은 위치 순으로 쌓인다 — 가까운 것부터
+            if n_ > 200:
+                break
+            if s_.start < pos and s_.law and not s_.in_quote:
+                if best is None or s_.start >= best[0]:
+                    best = (s_.start, s_.law, s_.law_candidates)
+                break
         return (best[1], best[2]) if best else None
 
     # ---- 조문 ----
@@ -648,7 +764,7 @@ def extract_all(text: str) -> Extraction:
         hang = _hang_of(m)
         ho = _ho_of(m)
         mok = m.group("mok")
-        inq = _inside(m.start(), qualifying) is not None
+        inq = q_ix.find(m.start()) is not None
         ref = _LawRef()
         law: Optional[str] = None
         cands: List[str] = []
@@ -657,14 +773,13 @@ def extract_all(text: str) -> Extraction:
         gap = text[prev.end:m.start()] if prev else None
         if prev is not None and gap is not None and _CONT_GAP_RE.match(gap) and prev.in_quote == inq:
             law, cands, origin = prev.law, list(prev.law_candidates), "continuation"
-            ref.hist, ref.hist_date = prev.historical, prev.hist_date
+            ref.hist, ref.hist_date, ref.hist_no = prev.historical, prev.hist_date, prev.hist_no
             grp = prev.group
             if prev.problem and not prev.law:
                 problem = prev.problem
         else:
             grp = new_group()
-            floor = max([prev.end if prev else 0] + [e for s_, e in case_spans if e <= m.start()]
-                        + [s.end for s in qualifying if s.end <= m.start()])
+            floor = max(prev.end if prev else 0, max_le(case_ends, m.start()), max_le(q_ends, m.start()))
             ref = _lookback_law(text, m.start(), floor, alias_at)
             origin = ref.origin
             if origin == "nonlaw":
@@ -697,11 +812,11 @@ def extract_all(text: str) -> Extraction:
         end = m.end()
         title = None
         tm = _TITLE_RE.match(text[end:end + 60])
-        if tm and not re.search(r"\d{4}|이하|개정|신설|시행|선고|판결|결정|참조|위반|삭제|단서|본문|전단|후단|각\s*호|중략|생략", tm.group(1)):
+        if tm and not _NOT_TITLE_RE.search(tm.group(1)):
             title = tm.group(1).strip()
         c = StatuteCite(raw=text[m.start():end].strip(), start=m.start(), end=end, law=law, jo=jo, sub=sub,
                         hang=hang, ho=ho, mok=mok, claimed_title=title, historical=ref.hist or ref.hist_date is not None,
-                        hist_date=ref.hist_date, law_candidates=cands, law_origin=origin, problem=problem, group=grp,
+                        hist_date=ref.hist_date, hist_no=ref.hist_no, law_candidates=cands, law_origin=origin, problem=problem, group=grp,
                         in_quote=inq)
         statutes.append(c)
         prev = c
@@ -713,7 +828,7 @@ def extract_all(text: str) -> Extraction:
             hm = _ENUM_HANG_RE.match(tail)
             if hm and (cur.hang is not None):
                 c2 = StatuteCite(raw=tail[:hm.end()].strip(), start=pos, end=pos + hm.end(), law=law, jo=jo, sub=sub,
-                                 hang=_hang_of(hm), ho=_ho_of(hm), historical=c.historical, hist_date=c.hist_date,
+                                 hang=_hang_of(hm), ho=_ho_of(hm), historical=c.historical, hist_date=c.hist_date, hist_no=c.hist_no,
                                  law_candidates=cands, law_origin="continuation", problem=c.problem if not law else None,
                                  group=grp, in_quote=inq)
             else:
@@ -721,7 +836,7 @@ def extract_all(text: str) -> Extraction:
                 if om and cur.ho is not None:
                     c2 = StatuteCite(raw=tail[:om.end()].strip(), start=pos, end=pos + om.end(), law=law, jo=jo, sub=sub,
                                      hang=cur.hang, ho=_ho_of(om), mok=om.group("mok"), historical=c.historical,
-                                     hist_date=c.hist_date, law_candidates=cands, law_origin="continuation",
+                                     hist_date=c.hist_date, hist_no=c.hist_no, law_candidates=cands, law_origin="continuation",
                                      problem=c.problem if not law else None, group=grp, in_quote=inq)
                     hm = om
                 else:
@@ -729,7 +844,7 @@ def extract_all(text: str) -> Extraction:
                     if km and cur.mok is not None:
                         c2 = StatuteCite(raw=tail[:km.end()].strip(), start=pos, end=pos + km.end(), law=law, jo=jo,
                                          sub=sub, hang=cur.hang, ho=cur.ho, mok=km.group("mok"), historical=c.historical,
-                                         hist_date=c.hist_date, law_candidates=cands, law_origin="continuation",
+                                         hist_date=c.hist_date, hist_no=c.hist_no, law_candidates=cands, law_origin="continuation",
                                          problem=c.problem if not law else None, group=grp, in_quote=inq)
                         hm = km
                     else:
@@ -739,23 +854,46 @@ def extract_all(text: str) -> Extraction:
             prev = cur = c2
 
     # ---- '같은 조 제2항', '같은 항 제9호', '동호 가목' ----
+    base = sorted(statutes, key=lambda s_: s_.start)
+    base_ix = _SpanIndex(base)
+    base_ends = [s_.end for s_ in base]
+    added: List[StatuteCite] = []
+
+    def last_before(pos: int, inq: bool) -> Optional[StatuteCite]:
+        best = None
+        for seq, ends in ((base, base_ends), (added, [a.end for a in added[-200:]])):
+            src = seq if seq is base else added[-200:]
+            i = bisect_right(ends, pos) - 1
+            steps = 0
+            while i >= 0 and steps < 200:
+                x = src[i]
+                if x.in_quote == inq and x.law:
+                    if best is None or x.start > best.start:
+                        best = x
+                    break
+                i -= 1
+                steps += 1
+        return best
+
     for m in _SAME_UNIT_RE.finditer(text):
         if not (m.group("hang") or m.group("hangc") or m.group("ho") or m.group("mok")):
             continue
-        if any(s.start <= m.start() < s.end for s in statutes):
+        if base_ix.find(m.start()):
             continue
-        inq = _inside(m.start(), qualifying) is not None
-        before = [s for s in statutes if s.end <= m.start() and s.in_quote == inq and s.law]
+        inq = q_ix.find(m.start()) is not None
+        b_ = last_before(m.start(), inq)
+        before = [b_] if b_ is not None else []
         lvl = m.group("l1") or m.group("l2")
         c = StatuteCite(raw=m.group(0).strip(), start=m.start(), end=m.end(), law=None, jo=0, law_origin="anaphora",
                         in_quote=inq, group=new_group())
         if not before:
             c.problem = f"'같은 {lvl}'이(가) 가리키는 앞 조문이 없음"
             statutes.append(c)
+            added.append(c)
             continue
         b = before[-1]
         c.law, c.law_candidates, c.jo, c.sub = b.law, list(b.law_candidates), b.jo, b.sub
-        c.historical, c.hist_date = b.historical, b.hist_date
+        c.historical, c.hist_date, c.hist_no = b.historical, b.hist_date, b.hist_no
         if lvl == "조":
             c.hang, c.ho, c.mok = _hang_of(m), _ho_of(m), m.group("mok")
         elif lvl == "항":
@@ -769,29 +907,37 @@ def extract_all(text: str) -> Extraction:
         if c.mok and not c.ho and not c.problem:
             c.problem = f"'{c.mok}목'은 호 아래에만 있음"
         statutes.append(c)
+        added.append(c)
     statutes.sort(key=lambda s: s.start)
 
     # ---- 시행예정 문맥 ----
     for c in statutes:
         s0, s1 = _sentence_bounds(masked, c.start)
-        window_before = masked[max(s0, c.start - 60):c.start]
-        window_after = masked[c.end:min(s1, c.end + 40)]
+        # 인용이 든 절만 본다 — '제60조제9항은 현재 시행 중이며, 다른 조항은 시행 예정이다'의 '시행 예정'은 이 인용의 말이 아니다
+        lo = max(s0, c.start - 60)
+        c0 = max(lo, masked.rfind(",", lo, c.start) + 1, masked.rfind(";", lo, c.start) + 1)
+        am = re.search(r"[,;]", masked[c.end:min(s1, c.end + 40)])
+        c1 = c.end + am.start() if am else s1
+        window_before = masked[max(c0, c.start - 60):c.start]
+        window_after = masked[c.end:min(c1, c.end + 40)]
+        if _PRESENT_CLAIM_RE.search(window_before + window_after):
+            continue                      # '현재 시행 중'이라고 스스로 주장한 인용은 시행예정 문맥이 아니다
         for w in (window_before, window_after):
             for fm in _FUTURE_CTX_RE.finditer(w):
                 if not _FUTURE_NEG_RE.match(w[fm.end():fm.end() + 10]):
                     c.future_context = True
 
     for cc in cases:
-        cc.in_quote = _inside(cc.start, qualifying) is not None
+        cc.in_quote = q_ix.find(cc.start) is not None
     for a in auths:
-        a.in_quote = _inside(a.start, qualifying) is not None
+        a.in_quote = q_ix.find(a.start) is not None
 
     orphans = _attach_quotes(text, masked, qualifying, statutes, cases, auths)
     # 붙은 인용문·당사자 말 안의 인용 표기는 인용문의 일부 — 따로 검증하지 않는다
-    drop = [s for s in qualifying if s.attached or s.verb == "party"]
-    statutes = [s for s in statutes if not (s.in_quote and (_inside(s.start, drop) or s.problem))]
-    cases = [s for s in cases if not (s.in_quote and _inside(s.start, drop))]
-    auths = [s for s in auths if not (s.in_quote and _inside(s.start, drop))]
+    drop = _SpanIndex([s for s in qualifying if s.attached or s.verb == "party"])
+    statutes = [s for s in statutes if not (s.in_quote and (drop.find(s.start) or s.problem))]
+    cases = [s for s in cases if not (s.in_quote and drop.find(s.start))]
+    auths = [s for s in auths if not (s.in_quote and drop.find(s.start))]
     return Extraction(text, statutes, cases, auths, orphans, qualifying)
 
 
@@ -812,7 +958,7 @@ def _classify_quote(text: str, masked: str, q: QuoteSpan, s0: int, s1: int, cite
     if lm and (not pm or lm.start() < pm.start()):
         return "legal"
     if pm:
-        subj = masked[s0:q.start]
+        subj = masked[max(s0, q.start - 300):q.start]
         if _PARTY_SUBJ_RE.search(subj):
             return "party"
         # 출처가 주어이거나 출처를 가리키는 문장('… 판결은 “…”라고 진술하였다', '위 판결문에는 “…”라고 적혀 있다')은
@@ -826,12 +972,31 @@ def _classify_quote(text: str, masked: str, q: QuoteSpan, s0: int, s1: int, cite
 def _attach_quotes(text: str, masked: str, spans: List[QuoteSpan], statutes: List[StatuteCite],
                    cases: List[CaseCite], auths: List[AuthorityCite]) -> List[QuoteSpan]:
     cites = sorted([c for c in list(statutes) + list(cases) + list(auths) if not c.in_quote], key=lambda c: c.start)
+    starts = [c.start for c in cites]
     orphans: List[QuoteSpan] = []
+    groups: Dict[int, List[StatuteCite]] = {}
+    for s_ in statutes:
+        if not s_.in_quote:
+            groups.setdefault(s_.group, []).append(s_)
+
+    def between(a: int, b: int) -> List[object]:
+        return cites[bisect_left(starts, a):bisect_left(starts, b)]
+
+    def last_where(end_before: int, floor: int, pred=lambda c: True, limit: int = 300):
+        i = bisect_left(starts, end_before) - 1
+        steps = 0
+        while i >= 0 and cites[i].start >= floor and steps < limit:
+            c = cites[i]
+            if c.end <= end_before and pred(c):
+                return c
+            i -= 1
+            steps += 1
+        return None
 
     def attach(c, q: QuoteSpan) -> None:
         q.attached = True
         if isinstance(c, StatuteCite):
-            members = [s for s in statutes if s.group == c.group and not s.in_quote] or [c]
+            members = groups.get(c.group) or [c]
             head = min(members, key=lambda s: s.start)
             head.quotes.append(q.text.strip())
             for s in members:
@@ -846,7 +1011,7 @@ def _attach_quotes(text: str, masked: str, spans: List[QuoteSpan], statutes: Lis
         if q.kind == "block":
             # 콜론·'다음과 같이' 뒤의 블록 인용(>) — 앞 줄의 마지막 인용에 붙인다
             ls, le = _lead_line(text, q.start)
-            on_line = [c for c in cites if ls <= c.start < le]
+            on_line = between(ls, le)
             q.verb = "legal"
             if on_line:
                 attach(on_line[-1], q)
@@ -854,18 +1019,21 @@ def _attach_quotes(text: str, masked: str, spans: List[QuoteSpan], statutes: Lis
                 orphans.append(q)
             continue
         s0, s1 = _sentence_bounds(masked, q.start)
-        before = [c for c in cites if s0 <= c.start and c.end <= q.start]
+        last_before = last_where(q.start, s0)
+        before = [last_before] if last_before is not None else []
         q.verb = _classify_quote(text, masked, q, s0, s1, before)
-        ctx = masked[s0:q.start] + masked[q.end:min(s1, q.end + 40)]
+        ctx = masked[max(s0, q.start - 200):q.start] + masked[q.end:min(s1, q.end + 40)]
         q.body_ok = bool(_BODY_CTX_RE.search(ctx))
         if q.verb == "party":
             continue
-        long_enough = len(normalize_for_match(q.text)) >= 12
+        # 출처 바로 뒤의 짧은 인용도 원문 주장으로 본다('민법 제750조의 핵심은 “과실이 없어도 된다”는 점') — 6자 미만은 용어 강조
+        long_enough = len(normalize_for_match(q.text)) >= 6
         target = None
         # (1) “…”(민법 제750조)
         pm = re.match(r"\s*\(\s*", text[q.end:q.end + 6])
         if pm:
-            target = next((c for c in cites if q.end <= c.start <= q.end + pm.end() + 1), None)
+            i = bisect_left(starts, q.end)
+            target = cites[i] if i < len(cites) and cites[i].start <= q.end + pm.end() + 1 else None
         # (2) 같은 문장 안 앞의 인용
         if target is None and before and (q.verb == "legal" or long_enough):
             last = before[-1]
@@ -873,28 +1041,47 @@ def _attach_quotes(text: str, masked: str, spans: List[QuoteSpan], statutes: Lis
                 target = last
         # (3) 같은 문장 안 뒤의 인용('“…”라는 민법 제750조의 규정')
         if target is None and (q.verb == "legal" or long_enough):
-            target = next((c for c in cites if q.end <= c.start < s1 and c.start - q.end <= 40), None)
+            i = bisect_left(starts, q.end)
+            target = cites[i] if i < len(cites) and cites[i].start < s1 and cites[i].start - q.end <= 40 else None
         # (4) 앞 문장의 인용을 가리키는 주어('위 판결은', '이 조항은')
         if target is None:
             am = None
-            for am_ in _ANAPH_SUBJ_RE.finditer(masked, s0, q.start):
+            for am_ in _ANAPH_SUBJ_RE.finditer(masked, max(s0, q.start - 300), q.start):
                 am = am_
             if am:
                 k = am.group("k")
                 want = CaseCite if re.search(r"판결|결정|판례", k) else (AuthorityCite if re.search(r"해석|회신|회답", k) else StatuteCite)
-                prior = [c for c in cites if isinstance(c, want) and c.end <= am.start()]
-                if prior:
-                    target = prior[-1]
+                hit = last_where(am.start(), 0, lambda c: isinstance(c, want))
+                if hit is not None:
+                    target = hit
         # (5) 앞 줄이 '다음과 같이 …' 또는 ':' 로 끝나고 인용문이 줄 첫머리에서 시작
         if target is None:
             line_start = text.rfind("\n", 0, q.start) + 1
             if not text[line_start:q.start].strip(" \t>-*"):
                 pl_start, pl_end = _lead_line(text, line_start)
                 prev_line = text[pl_start:pl_end]
-                on_line = [c for c in cites if pl_start <= c.start < pl_end]
-                if on_line and _NEXT_LINE_LEAD_RE.search(prev_line.strip()):
+                on_line = between(pl_start, pl_end)
+                # 앞 줄이 '다음과 같이 …:' 이거나, 출처만 적은 제목·목록 줄('### 민법 제750조', '- 근로기준법 제23조')
+                bare = prev_line
+                for c in reversed(on_line):
+                    bare = bare[:c.start - pl_start] + bare[c.end - pl_start:]
+                for c in on_line:
+                    for nm in [getattr(c, "law", None)] + list(getattr(c, "law_candidates", []) or []):
+                        if nm:
+                            bare = bare.replace(nm, "")
+                heading_like = bool(on_line) and not re.sub(r"[#>*\-\s:：.()\[\]「」]|의|에서|에|은|는|참조|규정|조문", "", bare)
+                if on_line and (_NEXT_LINE_LEAD_RE.search(prev_line.strip()) or heading_like):
                     target = on_line[-1]
                     q.verb = q.verb or "legal"
+        # (6) 같은 문단 앞 문장의 출처: '민법 제750조 참조. 그러므로 “…”.' — 인용문이 문장 첫머리(접속어만)에서 시작할 때
+        if target is None and len(normalize_for_match(q.text)) >= 12:
+            lead = masked[s0:q.start] if q.start - s0 <= 80 else "_"
+            lo = max(0, q.start - 600)
+            para_start = max(text.rfind("\n\n", lo, q.start) + 2, lo)
+            if _SENT_LEAD_RE.fullmatch(lead.strip()):
+                hit = last_where(s0, para_start)
+                if hit is not None and q.start - hit.end <= 300:
+                    target = hit
         if target is not None:
             attach(target, q)
         elif q.verb == "legal":
@@ -982,6 +1169,10 @@ class Verifier:
                             warnings.append(f"약칭/이칭 '{c.law}' → 정식명 '{fl['name']}' (DRF 확인) — 정식명 인용 권장")
                 except ApiUnavailable:
                     pass
+        if c.hist_date and doc is not None:
+            bad = self.statutes.amendment_problem(doc, c.hist_date, c.hist_no)
+            if bad:
+                return Finding("statute", f"구 {doc.title} {c.label}", MISMATCH, bad, warnings=warnings)
         if c.historical and not c.hist_date:
             name = doc.title if doc else c.law
             return Finding("statute", f"구 {name} {c.label}", UNVERIFIABLE,
@@ -1039,15 +1230,16 @@ class Verifier:
             return f"{mok}목 없음 (목 {list(items[ho].subitems) or '없음'})"
         return "해당 단위 없음"
 
-    def _quote_source(self, doc, c: StatuteCite, primary_text: str, title: Optional[str], as_of: date) -> str:
+    def _quote_source(self, doc, c: StatuteCite, primary_text: str, title: Optional[str], as_of: date, k: int = 0) -> str:
+        """인용문 대조 원문: 인용 단위의 기준일 문언(후보 k) + 나열 인용의 다른 단위들의 기준일 문언."""
         head = f"제{c.jo}조" + (f"의{c.sub}" if c.sub else "") + (f"({title})" if title else "")
         parts = [head + " " + (primary_text or "")]
         for u in c.quote_units:
             if u == c.unit:
                 continue
             st2 = self.statutes.unit_status(doc, u[0], u[1], u[2], u[3], u[4], as_of)
-            if st2.state == "in_force" and st2.text:
-                parts.append(st2.text)
+            if st2.state in ("in_force", "mixed") and st2.texts:
+                parts.append(st2.texts[min(k, len(st2.texts) - 1)])
         return "\n".join(parts)
 
     def _verify_local(self, c: StatuteCite, doc, warnings: List[str], as_of: date) -> Finding:
@@ -1103,25 +1295,44 @@ class Verifier:
         if st.state == "deleted":
             return Finding("statute", cit, MISMATCH, f"삭제된 조항 — 원문: “{(st.text or '').strip()[:60]}” (기준일 {iso(as_of)})",
                            src, warnings + notes, ev)
-        # in_force
-        title = st.title if st.title is not None else (art.title if art else "")
-        ev.update(article=f"제{c.jo}조" + (f"의{c.sub}" if c.sub else ""), title=title, version=st.version)
-        if c.claimed_title and normalize_for_match(c.claimed_title) != normalize_for_match(title or ""):
-            extra = ""
-            if art is not None and art.title and normalize_for_match(c.claimed_title) == normalize_for_match(art.title):
-                extra = " (인용한 제목은 시행 전 개정 후 제목)"
-            return Finding("statute", cit, MISMATCH, f"조문 제목 불일치: 인용 '({c.claimed_title})' ↔ 원문 '({title or '제목 없음'})'{extra}",
-                           src, warnings, ev)
+        # in_force | mixed — 기준일 문언·제목 후보(mixed 면 개정 전·후 둘)와 대조: 모두 맞아야 확인
+        texts = st.texts or ([st.text] if st.text else [])
+        titles = list(st.titles)
+        title = st.title if st.title is not None else (" / ".join(t for t in titles if t) if titles else "")
+        ev.update(article=f"제{c.jo}조" + (f"의{c.sub}" if c.sub else ""), title=title, version=st.version,
+                  candidates=len(texts))
+        if c.claimed_title:
+            if not titles:
+                return Finding("statute", cit, UNVERIFIABLE, f"기준일({iso(as_of)}) 조문 제목을 확정하지 못함: {'; '.join(notes) or '판본 정보 부족'}",
+                               src, warnings, ev)
+            hits = [normalize_for_match(c.claimed_title) == normalize_for_match(t or "") for t in titles]
+            if not any(hits):
+                extra = ""
+                if art is not None and art.title and normalize_for_match(c.claimed_title) == normalize_for_match(art.title):
+                    extra = " (인용한 제목은 아직 시행 전인 개정 후 제목)"
+                return Finding("statute", cit, MISMATCH, f"조문 제목 불일치: 인용 '({c.claimed_title})' ↔ 기준일 원문 '({title or '제목 없음'})'{extra}",
+                               src, warnings, ev)
+            if not all(hits):
+                return Finding("statute", cit, UNVERIFIABLE, f"기준일 조문 제목이 개정 전·후로 갈림('{title}') — 부칙상 일부만 시행 중이라 확정 불가",
+                               src, warnings + notes, ev)
         if c.quotes:
-            source = self._quote_source(doc, c, st.text or "", title, as_of)
+            sources = [self._quote_source(doc, c, t, titles[min(k, len(titles) - 1)] if titles else None, as_of, k)
+                       for k, t in enumerate(texts)]
             for q in c.quotes:
-                if not quote_found(q, source):
+                hits = [quote_found(q, src_text) for src_text in sources]
+                if not any(hits):
                     where = label if not c.quote_units or len(c.quote_units) <= 1 else ", ".join(
                         f"제{u[0]}조" + (f"의{u[1]}" if u[1] else "") + (f"제{u[2]}항" if u[2] else "") + (f"제{u[3]}호" if u[3] else "")
                         for u in c.quote_units)
                     return Finding("statute", cit, MISMATCH,
                                    f"인용 문구가 {where}의 기준일({iso(as_of)}) 원문과 불일치: “{q[:70]}{'…' if len(q) > 70 else ''}”",
                                    src, warnings, ev)
+                if not all(hits):
+                    return Finding("statute", cit, UNVERIFIABLE,
+                                   f"인용 문구가 개정 전·후 문언 중 한쪽에만 있음 — 기준일({iso(as_of)})에 이 단위는 부칙상 일부만 시행 중이라 "
+                                   f"확정 불가: “{q[:60]}”", src, warnings + notes, ev)
+        if st.state == "mixed":
+            warnings.append("기준일에 이 단위는 개정 전·후 문언이 섞여 있음(부칙 단서로 일부만 시행) — 두 문언에 공통인 내용만 확인됨")
         if st.pending_change:
             warnings.append("이 조항에는 시행 전 개정이 공포되어 있음(최신 공포본 문언과 다름) — 기준일 문언으로 대조함")
         warnings += [n for n in notes if "추정" in n or "생략" in n or "다름" in n]
@@ -1310,10 +1521,16 @@ class Verifier:
                 return None
         title = str((doc or {}).get("meta", {}).get("사건명", "")) if doc else ""
         if c.en_banc:
+            if e.grade != "대법원":
+                return Finding("case", cit, MISMATCH, f"전원합의체는 대법원 판결에만 있음 — 이 사건번호는 {e.court} 판결", src, warnings)
             if doc is None:
                 return Finding("case", cit, UNVERIFIABLE, "'전원합의체' 표기를 확인하려면 판결 본문이 필요한데 읽지 못함", src, warnings)
-            if "전원합의체" not in str(doc.get("text", "")) and "전원합의체" not in title:
-                return Finding("case", cit, MISMATCH, "전원합의체 판결이 아님(판결문에 '전원합의체' 없음)", src, warnings)
+            eb = en_banc_status(str(doc.get("text", "")), str(doc.get("sections", {}).get("참조판례", "")))
+            if eb is False:
+                return Finding("case", cit, MISMATCH, "전원합의체 판결이 아님 — 판결문 서명란이 대법관 4인 소부", src, warnings)
+            if eb is None:
+                return Finding("case", cit, UNVERIFIABLE, "판결문에서 재판부(서명란·의견 표시)를 확인하지 못해 '전원합의체' 표기를 대조할 수 없음 "
+                               "(이유 중에 다른 전원합의체 판결을 인용한 것은 근거가 아님)", src, warnings)
         if c.quotes:
             if doc is None and self.api is not None:
                 try:
@@ -1367,8 +1584,12 @@ class Verifier:
             full = "\n".join(body.get(k, "") for k in ("판시사항", "판결요지", "판례내용")).strip()
             if not full:
                 return Finding("case", cit, UNVERIFIABLE, "판결 본문 미제공(데이터출처에 따라 본문 없음) — 대조 불가", "DRF prec", warnings)
-            if c.en_banc and "전원합의체" not in full and "전원합의체" not in h.get("사건명", ""):
-                return Finding("case", cit, MISMATCH, "전원합의체 판결이 아님", "DRF prec", warnings)
+            if c.en_banc:
+                eb = en_banc_status(full, body.get("참조판례", ""))
+                if eb is False:
+                    return Finding("case", cit, MISMATCH, "전원합의체 판결이 아님 — 판결문 서명란이 대법관 4인 소부", "DRF prec", warnings)
+                if eb is None:
+                    return Finding("case", cit, UNVERIFIABLE, "판결문에서 재판부를 확인하지 못해 '전원합의체' 표기를 대조할 수 없음", "DRF prec", warnings)
             for q in c.quotes:
                 if summary and quote_found(q, summary):
                     continue
@@ -1417,9 +1638,11 @@ class Verifier:
             return self.verify_case(c)
         return self.verify_authority(c)
 
-    def verify_entry(self, citation: str, quote: Optional[str] = None, kind: Optional[str] = None) -> Tuple[Optional[Finding], List[str]]:
+    def verify_entry(self, citation: str, quote: Optional[str] = None, kind: Optional[str] = None,
+                     body_ok: bool = False) -> Tuple[Optional[Finding], List[str]]:
         """증거 JSON 한 항목: citation 필드에 인용이 정확히 하나, quote 는 그 인용에 명시적으로 붙여 대조.
-        반환: (판정, 형식 문제 목록)"""
+        판례 quote 는 판시사항·판결요지와만 대조한다(body_ok=False) — citation 문자열에 '이유' 같은 말을 넣어 판결 이유 본문
+        (당사자 주장·사실관계 포함)과 대조되게 하는 우회를 막는다. 반환: (판정, 형식 문제 목록)"""
         problems: List[str] = []
         if not isinstance(citation, str) or not citation.strip():
             return None, ["citation 이 문자열이 아님/비어 있음"]
@@ -1440,7 +1663,7 @@ class Verifier:
             if isinstance(c, StatuteCite):
                 c.quote_units = [c.unit]
             if isinstance(c, CaseCite):
-                c.body_ok = bool(_BODY_CTX_RE.search(citation))
+                c.body_ok = bool(body_ok)
         return self.verify_one(c), problems
 
     # ---- 문서 ----

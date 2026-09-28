@@ -6,7 +6,8 @@ from _util import FIX, has_git, history_repo
 
 from kr_common import parse_frontmatter_text, read_frontmatter, split_frontmatter
 from legal_engine import StatuteMirror, parse_article_no
-from temporal import after_period, coverage, is_deleted_unit, parse_buchik, parse_unit_list, parse_when
+from temporal import (after_period, block_span, coverage, is_deleted_unit, parse_buchik, parse_subject_ex, parse_unit_list,
+                      parse_when, unit_effective)
 
 AS_OF = date(2026, 9, 28)
 HIST = FIX / "legalize-kr-history" / "versions"
@@ -115,10 +116,12 @@ class TestBuchik(unittest.TestCase):
     def test_unit_lists(self):
         units = parse_unit_list("제13조, 제11장의 제목, 제101조, 제102조의2, 제103조부터 제105조까지, 제110조제1호, "
                                 "제114조제1호 및 제116조제2항제1호ㆍ제4호")
-        self.assertIn(((102, 2, None, None), None), units)
-        self.assertIn(((103, None, None, None), 105), units)
-        self.assertIn(((116, None, 2, "1"), None), units)
-        self.assertIn(((116, None, 2, "4"), None), units)
+        keys = [(u.jo, u.sub, u.hang, u.ho, u.jo_end) for u in units]
+        self.assertIn((102, 2, None, None, None), keys)
+        self.assertIn((103, None, None, None, (105, 0)), keys)
+        self.assertIn((116, None, 2, "1", None), keys)
+        self.assertIn((116, None, 2, "4", None), keys)
+        self.assertNotIn(11, [u.jo for u in units])                  # '제11장의 제목'은 조항이 아니다('제목'≠목)
         self.assertEqual(coverage(units, 104, None, None, None), "full")
         self.assertEqual(coverage(units, 116, None, 2, None), "partial")
         self.assertEqual(coverage(units, 116, None, 2, "2"), "none")
@@ -129,6 +132,71 @@ class TestBuchik(unittest.TestCase):
         self.assertEqual(b.main_effective, date(2026, 10, 8))
         self.assertEqual(sorted(e.effective for e in b.exceptions), [date(2026, 12, 8), date(2027, 1, 1)])
         self.assertEqual(coverage(b.exceptions[1].units, 44, 4, None, None), "full")
+
+    # ---- 3차 적대적 검토(§G): 부칙 시행일 조문 변형 — 전체 미러 93,749개 블록 실측으로 모은 문형 ----
+    @staticmethod
+    def buchik(*blocks, title="테스트법"):
+        return parse_buchik("## 부칙\n\n" + "\n\n".join(blocks), title)
+
+    def test_when_expressions_round3(self):
+        self.assertEqual(parse_when("공포 후 1년 6개월이 경과한 날", date(2026, 1, 15)), date(2027, 7, 16))
+        self.assertEqual(parse_when("공포일", date(2026, 1, 15)), date(2026, 1, 15))
+        self.assertEqual(parse_when("공포일이 속하는 달의 다음 달 1일", date(2026, 12, 15)), date(2027, 1, 1))
+        self.assertIsNone(parse_when("해당 호에서 정하는 날", date(2026, 1, 15)))
+
+    def test_real_buchik_2024_10_22_per_item_wording(self):
+        # '다만, 다음 각 호의 사항은 그 구분에 따른 날부터' — 종전 파서는 모든 호를 '시행일 미상'으로 읽어 제60조⑥이 판정 불가였다
+        text = (HIST / "근로기준법/법률(법률)/20260609-16.md").read_text(encoding="utf-8")
+        b = [x for x in parse_buchik(split_frontmatter(text)[1], "근로기준법") if x.promulgated == date(2024, 10, 22)][0]
+        self.assertEqual(b.main_effective, date(2025, 10, 23))
+        self.assertEqual(unit_effective(b, 60, None, 6, None)[:2], (date(2024, 10, 22), date(2024, 10, 22)))
+        self.assertEqual(unit_effective(b, 74, None, 7, None)[:2], (date(2025, 2, 23), date(2025, 2, 23)))
+        self.assertEqual(unit_effective(b, 23, None, None, None)[:2], (date(2025, 10, 23), date(2025, 10, 23)))
+
+    def test_items_with_mok_and_omitted_items(self):
+        b = self.buchik("부칙 <제100호,2026.1.15>\n\n제1조(시행일) 이 법은 공포한 날부터 시행한다. 다만, 다음 각 호의 개정규정은 "
+                        "해당 호에서 정하는 날부터 시행한다.\n\n1. 다음 각 목의 개정규정은 2027년 1월 1일부터 시행한다.\n"
+                        "  가. 제5조제2항\n  나. 제7조\n2. 제9조의 개정규정: 공포 후 6개월이 경과한 날\n\n"
+                        "제2조(경과조치) 제3조의 개정규정은 2030년 1월 1일부터 시행한다.")[0]
+        self.assertEqual(unit_effective(b, 5, None, 2, None)[:2], (date(2027, 1, 1), date(2027, 1, 1)))
+        self.assertEqual(unit_effective(b, 7, None, None, None)[:2], (date(2027, 1, 1), date(2027, 1, 1)))
+        self.assertEqual(unit_effective(b, 9, None, None, None)[:2], (date(2026, 7, 16), date(2026, 7, 16)))
+        self.assertEqual(unit_effective(b, 3, None, None, None)[:2], (date(2026, 1, 15), date(2026, 1, 15)))   # 제2조는 시행일 조문이 아님
+        b = self.buchik("부칙 <제101호,2026.1.15>\n\n제1조(시행일) 이 법은 공포한 날부터 시행한다. 다만, 다음 각 호의 개정규정은 "
+                        "각 호의 구분에 따른 날부터 시행한다.\n\n1. 생략\n2. 제9조의 개정규정: 2027년 1월 1일")[0]
+        self.assertIsNone(unit_effective(b, 3, None, None, None)[1])        # 제 법 부칙의 '생략' 호 — 어느 조항인지 모름
+
+    def test_siheng_hadoe_and_chained_same_article(self):
+        b = self.buchik("부칙 <제102호,2004.3.17>\n\n①(시행일) 이 영은 공포한 날부터 시행하되, 제12조의 개정규정은 2004년 1월 1일부터 "
+                        "적용한다. 다만, 제42조의 개정규정은 2004년 4월 1일부터 시행한다.\n\n②(경과조치) 이 영 시행 당시 …")[0]
+        self.assertEqual(b.main_effective, date(2004, 3, 17))
+        self.assertEqual(unit_effective(b, 12, None, None, None)[:2], (date(2004, 3, 17), date(2004, 3, 17)))  # '적용'은 시행일이 아님
+        self.assertEqual(unit_effective(b, 42, None, None, None)[:2], (date(2004, 4, 1), date(2004, 4, 1)))
+        b = self.buchik("부칙 <제103호,2020.1.1>\n\n제1조(시행일) 이 법은 2020년 3월 1일부터 시행한다. 다만, 제5조제1항은 2020년 6월 1일부터, "
+                        "같은 조 제2항은 2021년 1월 1일부터 각각 시행한다.")[0]
+        self.assertEqual(unit_effective(b, 5, None, 2, None)[:2], (date(2021, 1, 1), date(2021, 1, 1)))
+        self.assertEqual(unit_effective(b, 5, None, 1, None)[:2], (date(2020, 6, 1), date(2020, 6, 1)))
+
+    def test_other_law_buchik(self):
+        # 타법개정 부칙의 맨 조항 번호는 그 다른 법률의 것 — 이 법 조항에 걸지 않는다. 이 법을 고치는 부칙 조항을 가리킨 단서만 쓴다
+        b = self.buchik("부칙(다른법) <제200호,2021.5.1>\n\n제1조(시행일) 이 법은 공포한 날부터 시행한다. 다만, ㆍㆍㆍ<생략>ㆍㆍㆍ 부칙 제4조는 "
+                        "2022년 1월 1일부터 시행한다.\n\n제2조 및 제3조 생략\n\n제4조(다른 법률의 개정) ①부터 ③까지 생략\n"
+                        "④ 테스트법 일부를 다음과 같이 개정한다.\n제3조 중 \"가\"를 \"나\"로 한다.")[0]
+        self.assertEqual(b.amending, (4, 4))
+        self.assertEqual(unit_effective(b, 3, None, None, None)[:2], (date(2022, 1, 1), date(2022, 1, 1)))
+        b = self.buchik("부칙(다른법) <제300호,2021.5.1>\n\n제1조(시행일) 이 법은 공포 후 1년이 경과한 날부터 시행한다. 다만, 제3조의 "
+                        "개정규정은 공포한 날부터 시행한다.\n\n제2조(다른 법률의 개정) 테스트법 일부를 다음과 같이 개정한다.")[0]
+        self.assertEqual(unit_effective(b, 3, None, None, None)[:2], (date(2022, 5, 2), date(2022, 5, 2)))
+        self.assertEqual(unit_effective(b, 3, None, None, None, date(2022, 6, 1))[:2], (date(2022, 5, 2), date(2022, 6, 1)))
+        self.assertEqual(block_span(b), (date(2022, 5, 2), date(2022, 5, 2)))
+
+    def test_subject_variants(self):
+        self.assertEqual(parse_subject_ex("별표 2 중 제4호나목 및 다목의 규정"), ([], False, True, []))      # 별표만 — 조문과 무관
+        units, unc, irr, bu = parse_subject_ex("제5조 및 부칙 제2조")
+        self.assertEqual(([u.jo for u in units], [u.jo for u in bu]), ([5], [2]))
+        units, unc, irr, bu = parse_subject_ex("법률 제8830호 국세기본법 일부개정법률 제3조의 개정규정")
+        self.assertEqual((units, unc, irr), ([], True, False))                                         # 다른 개정법률의 조항
+        self.assertEqual(parse_subject_ex("제3조의 개정규정", "테스트법", foreign=True)[0], [])
 
 
 @unittest.skipUnless(has_git(), "git 필요")
@@ -208,6 +276,12 @@ class TestUnitStatusNoHistory(unittest.TestCase):
         self.assertEqual(self.st("민법", 1112, ho="4").state, "deleted")
         self.assertEqual(self.st("근로기준법", 76, 2, as_of=date(2018, 1, 1)).state, "absent")   # 장 제목 <신설 2019.1.15>
         self.assertEqual(self.st("근로기준법", 60, as_of=date(2005, 1, 1)).state, "unknown")      # 2007 전부개정 이전
+
+    def test_deleted_and_renumbered_units_with_pending_head(self):   # 3차 검토
+        self.assertEqual(self.st("근로기준법", 116, hang=4).state, "deleted")        # '④ 삭제 <2009.5.21>' — 최신본이 시행 전이어도 확정
+        s = self.st("근로기준법", 60, hang=8)                                          # <개정 2020.3.31, 2026.6.9> — 기준일엔 ⑦
+        self.assertEqual(s.state, "unknown")
+        self.assertIsNone(s.exists)
 
 
 class TestDelegatedAndSearch(unittest.TestCase):

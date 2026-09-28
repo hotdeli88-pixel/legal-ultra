@@ -426,6 +426,77 @@ class TestDocument(unittest.TestCase):
         self.assertEqual(v.verify_entry(123)[1], ["citation 이 문자열이 아님/비어 있음"])
 
 
+class TestRound3(unittest.TestCase):
+    """3차 적대적 검토(docs/REVIEW-2026-09-28.md §G) 재현 사례 — 모두 통과(PASS)되면 안 되던 것."""
+
+    def test_enbanc_uses_own_panel(self):   # P1 P2
+        f = one("대법원 2025. 8. 14. 선고 2023다216777 전원합의체 판결")   # 이유에 2020다247190 전원합의체 판결을 인용한 4인 소부 판결
+        self.assertEqual(f["status"], MISMATCH)
+        self.assertIn("소부", f["detail"])
+        self.assertEqual(one("대구지방법원 2008. 5. 19.자 2008브4 전원합의체 결정")["status"], MISMATCH)
+
+    def test_reason_phrases_do_not_open_body(self):   # P3 P4
+        for t in ("대법원 2021. 9. 16. 선고 2021다219529 판결은 “상고를 모두 기각한다”라는 이유로 사용자책임을 인정하였다.",
+                  "대법원 2021. 9. 16. 선고 2021다219529 판결은 원심을 파기하면서 “상고를 모두 기각한다”라고 판시하였다."):
+            self.assertEqual(one(t)["status"], MISMATCH, t)
+        f, _ = verifier().verify_entry("대법원 2021. 9. 16. 선고 2021다219529 판결 이유", "상고를 모두 기각한다")
+        self.assertEqual(f.status, MISMATCH)                                    # 증거 항목: citation 문구로 본문 대조를 열 수 없음
+
+    def test_case_date_and_number_variants(self):   # P5 P6 P7 X1
+        for t in ("대법원 2021. 9. 17. 선고된 2021다219529 판결", "서울고등법원 2021. 9. 16. 선고된 2021다219529 판결",
+                  "대법원 2021다219529 판결(2021. 9. 17. 선고)", "대법원 2021. 9. 17. 선고, 2021다219529 판결"):
+            self.assertEqual(one(t)["status"], MISMATCH, t)
+        self.assertEqual(one("대법원 2021. 9. 16. 선고된 2021다219529 판결")["status"], VERIFIED)
+        self.assertEqual(one("대법원 2023. 5. 18. 선고 2022다 999999 판결")["status"], NOT_FOUND)
+        self.assertEqual(one("대법원 2021. 9. 16. 선고 2021다 219529 판결")["status"], VERIFIED)
+        self.assertEqual(extract("2020 다 3건의 사례")[1], [])
+
+    def test_short_merged_numbers_are_checked(self):   # P8
+        self.assertEqual(statuses("대법원 2023. 7. 13. 선고 2017므11856, 11863 판결"), [VERIFIED, VERIFIED])
+        self.assertIn(NOT_FOUND, statuses("대법원 2021. 9. 16. 선고 2021다219529, 219536 판결"))
+
+    def test_hidden_markup(self):   # X2 X3 X4
+        for t in ("민법 제<!-- -->1200조에 따르면 손해를 배상한다.", "민법 제*1200*조에 따르면 손해를 배상한다.",
+                  "민법 제<b>1200</b>조에 따르면", "민법 제&#49;200조에 따르면", "민법 제_1200_조에 따르면"):
+            self.assertEqual(statuses(t), [NOT_FOUND], t)
+        t = ('<!-- 「형법」(이하 "근로기준법"이라 한다) -->근로기준법 제250조제1항은 “사람을 살해한 자는 사형, 무기 또는 '
+             '5년 이상의 징역에 처한다”고 규정한다.')
+        self.assertEqual(statuses(t), [NOT_FOUND])
+
+    def test_quote_attachment_round3(self):   # Q1 Q2 Q3
+        v = verifier()
+        for t in ("민법 제750조의 핵심은 “과실이 없어도 된다”는 점이다.",
+                  "### 민법 제750조\n- “고의나 과실이 없어도 타인에게 손해를 가한 자는 배상책임을 진다.”",
+                  "민법 제750조 참조. 그러므로 “고의나 과실이 없어도 타인에게 손해를 가한 자는 배상책임을 진다”."):
+            self.assertEqual(v.verify_text(t)["verdict"], "FAIL", t)
+        self.assertEqual(v.verify_text(f"### 민법 제750조\n- “{Q750}.”")["verdict"], "PASS")
+        self.assertEqual(v.verify_text("근로기준법 제23조에서 말하는 “정당한 이유”가 쟁점이다.")["verdict"], "PASS")   # 5자 용어 강조
+
+    def test_old_version_must_exist(self):   # F1
+        f = one("구 근로기준법(2030. 1. 1. 법률 제99999호로 개정되기 전의 것) 제60조제9항")
+        self.assertEqual(f["status"], MISMATCH)
+        self.assertIn("공포된 개정이 없음", f["detail"])
+        self.assertEqual(one("구 근로기준법(2019. 1. 15. 법률 제16271호로 개정되기 전의 것) 제76조")["status"], MISMATCH)
+        self.assertEqual(one("구 근로기준법(2019. 1. 15. 법률 제16270호로 개정되기 전의 것) 제76조")["status"], VERIFIED)
+
+    def test_future_context_is_clause_scoped(self):   # F2
+        self.assertEqual(one("근로기준법 제60조제9항은 현재 시행 중이며, 다른 조항은 시행 예정이다.")["status"], MISMATCH)
+        self.assertEqual(one("2027. 6. 10. 시행 예정인 근로기준법 제60조제9항")["status"], VERIFIED)
+
+    def test_parenthetical_titles(self):   # F3
+        self.assertEqual(one("근로기준법 제23조(해고 금지 위반의 효과)")["status"], MISMATCH)
+        self.assertEqual(one("근로기준법 제23조(해고 등의 제한)")["status"], VERIFIED)
+        self.assertEqual(one("근로기준법 제23조(제1항 단서)")["status"], VERIFIED)          # 제목이 아닌 단위 표시
+
+    def test_pathological_inputs_are_fast(self):   # #16
+        import time
+        for t in ("“가" * 20000, '"가나다라마바사" ' * 20000, "민법 제1조제1항, 같은 조 제2항, 같은 항 제3호 " * 3000,
+                  "민법 제750조는 “고의 또는 과실로 인한” 규정. " * 5000):
+            t0 = time.time()
+            extract_all(t)
+            self.assertLess(time.time() - t0, 10, t[:20])
+
+
 class FakeApi:
     """DRF 대역. mode='down' 이면 접속 불가, 'lying' 이면 무엇을 물어도 다른 사건을 돌려준다(v1 첫 결과 폴백 재현용),
     'bodyfail' 이면 목록은 되고 본문 호출만 실패, 'empty' 면 본문이 비어 있음."""

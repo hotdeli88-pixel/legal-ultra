@@ -33,6 +33,7 @@ import re
 import secrets
 import sqlite3
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -41,6 +42,18 @@ from kr_common import configure_stdout, iso, normalize_for_match, parse_date, to
 
 ROLES = ("lead_counsel", "statute_analyst", "precedent_analyst", "risk_advocate", "counsel_builder", "legal_auditor")
 AUTHOR_TASKS = ("T1_STATUTE", "T2_PRECEDENT", "T3_RISK", "T4_DRAFT")
+AUTHOR_ROLES = ("statute_analyst", "precedent_analyst", "risk_advocate", "counsel_builder")
+AUTHOR_KINDS = ("research", "review", "build")
+# 사용자 정의 계획(--plan)도 역할·종류·게이트가 맞아야 한다 — 이름만 바꿔 직무 분리·게이트를 피하지 못하게
+_ROLE_RULES = {
+    "statute_analyst": ("research", ("statute_evidence", "none")),
+    "precedent_analyst": ("research", ("precedent_evidence", "none")),
+    "risk_advocate": ("review", ("risk_memo", "none")),
+    "counsel_builder": ("build", ("draft",)),
+    "legal_auditor": ("audit", ("audit",)),
+    "lead_counsel": ("deliver", ("final",)),
+}
+_FIXED_IDS = {"draft": "T4_DRAFT", "audit": "T5_AUDIT", "final": "T6_FINAL"}
 
 DEFAULT_TASKS: List[Dict[str, object]] = [
     {"id": "T1_STATUTE", "role": "statute_analyst", "kind": "research", "deps": [], "outputs": ["evidence_statute.json"],
@@ -77,9 +90,24 @@ MODES = {
 # 초안이 스스로 쓰면 안 되는 판정·시스템 문구(가짜 검증 보고서·감사 기록 끼워 넣기 차단). '검증'은 법률 용어(현장 검증)이기도
 # 해서 '인용/출처 검증', '검증 판정' 같은 조합만 잡는다.
 _SELF_VERDICT_RE = re.compile(
-    r"\bPASS(?:ED)?\b|\bAPPROVED?\b|무결점|citation\s*verifier|(?:인용|출처)\s*검증\s*(?:보고서|판정|결과|완료|통과)|"
-    r"검증기?\s*판정|감사\s*(?:판정|승인)|독립\s*감사\s*[:：]|시스템\s*생성|수정\s*금지|변호사\s*검토\s*완료|🛡", re.I)
-_WIN_PCT_RE = re.compile(r"(?:승소|인용|구제|승인)\s*(?:가능성|확률|률)[^\n%]{0,20}?\d{1,3}(?:\.\d+)?\s*%")
+    r"(?<![A-Za-z])P\W{0,2}A\W{0,2}S\W{0,2}S(?:ED)?(?![A-Za-z])|(?<![A-Za-z])APPROVE[DS]?(?![A-Za-z])|무결점|citation\s*verifier|"
+    r"(?:인용|출처)\s*검증\s*(?:보고서|판정|결과|완료|통과)|검증기?\s*판정|감사\s*(?:판정|승인|결과\s*[:：]?\s*(?:승인|통과|적합|이상\s*없))|"
+    r"독립\s*감사\s*(?:[:：]|기록)|시스템\s*생성|수정\s*금지|변호사\s*검토\s*완료|🛡|✅\s*(?:확인|통과|검증|적합|승인)|"
+    r"(?:^|\n)\s*#*\s*부록\s*[A-C](?=\s*[.:)\]]|\s)|원문\s*대조\s*완료", re.I)
+_WIN_PCT_RE = re.compile(r"(?:승소|인용|구제|승인|이길|패소)\s*(?:가능성|확률|률|율|비율)[^\n%]{0,20}?\d{1,3}(?:\.\d+)?\s*(?:%|퍼센트|프로)")
+# 판정 문구 위장 차단용: 키릴·그리스 문자의 라틴 닮은꼴
+_HOMOGLYPHS = str.maketrans({
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O", "Р": "P", "С": "C", "Т": "T", "Х": "X", "Ѕ": "S",
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x", "ѕ": "s", "і": "i", "І": "I",
+    "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K", "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P",
+    "Τ": "T", "Υ": "Y", "Χ": "X", "ο": "o", "ρ": "p", "ν": "v"})
+
+
+def _visible(text: str) -> str:
+    """형식 검사용 '독자가 보는' 글자: HTML 주석·태그·마크다운 강조·폭 없는 문자 제거(prep_text), NFKC(전각 → 반각),
+    키릴·그리스 닮은꼴 → 라틴. ('P<ZWSP>ASS'·'ＰＡＳＳ'·'РАSS'로 판정 문구를 위장해 게이트를 통과하던 문제)"""
+    from kr_common import prep_text
+    return unicodedata.normalize("NFKC", prep_text(text)).translate(_HOMOGLYPHS)
 _FIRAC_KEYS = [("결론",), ("사실",), ("쟁점",), ("법령", "법리", "Rules", "규정"), ("포섭", "적용", "Application", "검토"),
                ("대응", "전략", "권고", "행동")]
 MIN_HOLDING_QUOTE = 10
@@ -87,6 +115,54 @@ MIN_HOLDING_QUOTE = 10
 
 class GateError(Exception):
     pass
+
+
+def _validate_plan(plan: object, mode: str) -> None:
+    """--plan 검증: 역할·종류·게이트의 짝, 고정 이름(T4_DRAFT·T5_AUDIT·T6_FINAL), 의존 관계(알 수 없는 의존·순환 금지)."""
+    if not isinstance(plan, list) or not plan or not all(isinstance(t, dict) for t in plan):
+        raise GateError("--plan 형식 오류: tasks[] 가 비어 있지 않은 객체 목록이어야 함")
+    ids: List[str] = []
+    for t in plan:
+        tid, role, kind, gate = t.get("id"), t.get("role"), t.get("kind"), t.get("gate", "none")
+        if not isinstance(tid, str) or not re.fullmatch(r"[A-Za-z0-9_\-]{1,40}", tid):
+            raise GateError(f"--plan: 태스크 id 형식 오류({tid!r}) — 영문·숫자·-·_ 1~40자")
+        if role not in _ROLE_RULES:
+            raise GateError(f"--plan: {tid} 의 role '{role}' 은 역할 코드가 아님({', '.join(ROLES)})")
+        want_kind, gates = _ROLE_RULES[role]
+        if kind != want_kind or gate not in gates:
+            raise GateError(f"--plan: {tid} — {role} 은 kind '{want_kind}'·gate {'/'.join(gates)} 만 가능(받은 값: kind '{kind}', gate '{gate}')")
+        if gate in _FIXED_IDS and tid != _FIXED_IDS[gate]:
+            raise GateError(f"--plan: gate '{gate}' 태스크의 id 는 {_FIXED_IDS[gate]} 이어야 함(받은 값: {tid})")
+        if gate == "draft" and list(t.get("outputs", [])) != ["draft_opinion.md"]:
+            raise GateError("--plan: T4_DRAFT 의 outputs 는 [\"draft_opinion.md\"] 이어야 함")
+        if not isinstance(t.get("deps", []), list):
+            raise GateError(f"--plan: {tid} 의 deps 는 목록이어야 함")
+        ids.append(tid)
+    if len(set(ids)) != len(ids):
+        raise GateError("--plan: 태스크 id 중복")
+    need = ["T5_AUDIT", "T6_FINAL"] + ([] if mode == "verify" else ["T4_DRAFT"])
+    missing = [x for x in need if x not in ids]
+    if missing:
+        raise GateError(f"--plan: 필수 태스크 없음: {', '.join(missing)}")
+    deps = {t["id"]: list(t.get("deps", [])) for t in plan}
+    for tid, ds in deps.items():
+        bad = [d for d in ds if d not in deps]
+        if bad:
+            raise GateError(f"--plan: {tid} 의 deps 에 없는 태스크: {', '.join(map(str, bad))}")
+
+    def reach(a: str, b: str, seen=None) -> bool:
+        seen = seen or set()
+        if a in seen:
+            return False
+        seen.add(a)
+        return b in deps[a] or any(reach(x, b, seen) for x in deps[a])
+    for tid in deps:
+        if reach(tid, tid):
+            raise GateError(f"--plan: 순환 의존({tid})")
+    if "T4_DRAFT" in deps and not reach("T5_AUDIT", "T4_DRAFT"):
+        raise GateError("--plan: T5_AUDIT 는 T4_DRAFT 에 의존해야 함")
+    if not reach("T6_FINAL", "T5_AUDIT"):
+        raise GateError("--plan: T6_FINAL 은 T5_AUDIT 에 의존해야 함")
 
 
 def _now() -> str:
@@ -146,14 +222,17 @@ class Board:
         return row
 
     def authors(self, case_id: str) -> Dict[str, List[str]]:
-        """작업자 → 이 사안에서 claim 한 조사·집필 태스크(T1~T4). release 된 claim 도 포함(한 번이라도 맡았으면 저자)."""
+        """작업자 → 이 사안에서 claim 한 조사·집필 태스크. 태스크 이름이 아니라 역할·종류로 판단한다(사용자 정의 계획에서
+        집필 태스크 이름을 바꿔도 저자다). release 된 claim 도 포함(한 번이라도 맡았으면 저자)."""
+        author_ids = {r["task_id"] for r in self.conn.execute("SELECT task_id, role, kind FROM tasks WHERE case_id=?", (case_id,))
+                      if r["role"] in AUTHOR_ROLES or r["kind"] in AUTHOR_KINDS} | set(AUTHOR_TASKS)
         out: Dict[str, List[str]] = {}
         for r in self.conn.execute("SELECT actor, detail FROM events WHERE case_id=? AND action='claim'", (case_id,)):
             try:
                 tid = json.loads(r["detail"])
             except ValueError:
                 continue
-            if tid in AUTHOR_TASKS:
+            if tid in author_ids:
                 out.setdefault(r["actor"], []).append(tid)
         return out
 
@@ -175,9 +254,7 @@ class Board:
         if self.conn.execute("SELECT 1 FROM cases WHERE case_id=?", (case_id,)).fetchone():
             raise GateError(f"이미 있는 사안: {case_id} (덮어쓰지 않음)")
         if plan is not None:
-            if not isinstance(plan, list) or not all(isinstance(t, dict) and t.get("id") and t.get("role") in ROLES
-                                                     and t.get("kind") for t in plan):
-                raise GateError("--plan 형식 오류: tasks[] 각 항목에 id·role(역할 코드)·kind 가 필요")
+            _validate_plan(plan, mode)
         tasks = plan or [t for t in DEFAULT_TASKS if t["id"] in MODES[mode]]
         ids = {t["id"] for t in tasks}
         if mode == "verify" and (not draft or not Path(draft).is_file()):
@@ -411,7 +488,7 @@ class Board:
             "## 부록 B. 독립 감사 기록 (시스템 생성)",
             f"- 감사관: `{a['auditor']}` · 판정: **{a['verdict']}** · 검증기 판정: **{a['verifier_verdict']}** · 일시: {a['created_at']}",
             ("- 감사 독립성: ⚠️ 단일 에이전트 실행(init --single-agent) — 작성자와 감사자가 같은 에이전트일 수 있음"
-             if c["single_agent"] else "- 감사 독립성: 감사관은 조사·집필(T1~T4) 작업자와 다름(시스템 확인)"),
+             if c["single_agent"] else "- 감사 독립성: 감사관은 이 사안의 조사·집필 작업자와 다름(시스템 확인)"),
             f"- 리비전: {retries['retry_count'] if retries else 0}/{c['budget']}회 · 승인 초안 SHA-256: `{a['draft_sha']}`",
         ]
         if issues:
@@ -599,10 +676,10 @@ def run_gate(gate: str, path: Path, case_dir: Path, as_of: str, verifier=None, m
             text = path.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError) as e:
             return {"verdict": "FAIL", "problems": [f"초안을 읽을 수 없음: {e}"], "report_md": ""}
-        visible = re.sub(r"<!--.*?-->", "", text, flags=re.S)   # 템플릿 주석은 형식 검사에서 제외
+        visible = _visible(text)   # 템플릿 주석(<!-- -->)은 형식 검사에서 제외, 위장 문자는 풀어서 본다
         m = _SELF_VERDICT_RE.search(visible)
         if m:
-            problems.append(f"초안에 검증·감사 판정이나 시스템 문구('{m.group(0)}')를 쓰지 말 것 — 판정·보고서는 발행 시 시스템이 부록으로 붙임")
+            problems.append(f"초안에 검증·감사 판정이나 시스템 문구('{m.group(0).strip()}')를 쓰지 말 것 — 판정·보고서는 발행 시 시스템이 부록으로 붙임")
         if mode != "verify":    # verify 모드: 이미 있는 문서의 인용 감사 — 의견서 형식 요구 없음
             m = _WIN_PCT_RE.search(visible)
             if m:

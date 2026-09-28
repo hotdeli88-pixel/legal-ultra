@@ -52,6 +52,21 @@ class TestLegalCli(unittest.TestCase):
         finally:
             p.unlink()
 
+    def test_bad_input_files_fail_closed(self):   # 3차 검토 #15: 파일 이름을 본문으로 검증해 '인용 없음'으로 끝내지 않는다
+        rc, _, err = run(["--no-api", "verify", "draft_missing.md"], self.env)
+        self.assertEqual(rc, 3)
+        self.assertIn("파일이 없음", err)
+        p = FIX.parent / "_tmp_cp949.md"
+        p.write_bytes("민법 제750조제2항에 따르면".encode("cp949"))
+        try:
+            rc, _, err = run(["--no-api", "verify", str(p)], self.env)
+            self.assertEqual(rc, 1)                                          # CP949 로 읽어 가짜 항을 잡는다
+            self.assertIn("CP949", err)
+            p.write_bytes(bytes([0xff, 0xfe, 0x00, 0xd8]) + "민법 제750조".encode("utf-16-le"))
+            self.assertEqual(run(["--no-api", "verify", str(p)], self.env)[0], 3)   # 깨진 UTF-16
+        finally:
+            p.unlink()
+
     @unittest.skipUnless(has_git(), "git 필요")
     def test_article_shows_in_force_and_pending_text(self):
         env = dict(self.env, LEGALIZE_KR_PATH=str(history_repo()))

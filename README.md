@@ -65,13 +65,13 @@ scripts/
 references/                   출처·인용 규칙·역할·게이트·API target·FIRAC
 templates/                    의견서 틀, 작업 계획, 검증 통과 예시 산출물(examples/)
 tests/                        단위·통합 테스트(실제 판본 이력 발췌를 git 으로 재생, DRF 실측 응답 픽스처)
-docs/REVIEW-2026-09-28.md     적대적 검토 보고서(1차: v1 두 스킬, 2차: v2.0 → v2.1)
+docs/REVIEW-2026-09-28.md     적대적 검토 보고서(1차: v1 두 스킬, 2차: v2.0 → v2.1, 3차: v2.1 → v2.2)
 ```
 
 ## 테스트
 
 ```bash
-python3 -m unittest discover -s tests        # 네트워크 없이 실행(140개, Python 3.10~3.13)
+python3 -m unittest discover -s tests        # 네트워크 없이 실행(161개, Python 3.10~3.13)
 ```
 
 ## 한계

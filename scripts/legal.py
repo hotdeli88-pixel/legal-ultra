@@ -23,8 +23,10 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -395,19 +397,50 @@ def build_verifier(args) -> Verifier:
                     as_of=_as_of(args.as_of), cross_check=args.cross_check)
 
 
+_PATHLIKE_RE = re.compile(r"\.(?:md|markdown|txt|text|json|html?|docx?|hwpx?|pdf|rtf|csv)$", re.I)
+
+
+def _decode_input(data: bytes, where: str) -> str:
+    """UTF-8(BOM 허용) → UTF-16(BOM) → CP949 순. 어느 것도 아니면 오류 — 깨진 글자로 검증하지 않는다."""
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        try:
+            return data.decode("utf-16")
+        except UnicodeDecodeError:
+            raise UsageError(f"{where}: UTF-16 표시(BOM)가 있으나 내용이 깨짐 — UTF-8 로 저장해 다시 실행")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    try:
+        text = data.decode("cp949")
+    except UnicodeDecodeError:
+        raise UsageError(f"{where}: 문자 인코딩을 알 수 없음(UTF-8·UTF-16·CP949 아님) — UTF-8 로 저장해 다시 실행")
+    print(f"[legal-ultra] {where}: UTF-8 이 아니어서 CP949(EUC-KR)로 읽음", file=sys.stderr)
+    return text
+
+
 def read_input(target: str) -> str:
-    """'-' = 표준입력, 있는 파일 경로면 그 내용(UTF-8, BOM 허용), 아니면 인자 자체를 텍스트로 본다.
-    (긴 한국어 텍스트를 경로로 검사하다 'File name too long' 으로 죽던 문제 수정)"""
+    """'-' = 표준입력, 있는 파일 경로면 그 내용, 아니면 인자 자체를 텍스트로 본다.
+    파일처럼 보이는데 없거나(오타) 인코딩을 알 수 없으면 오류(종료 코드 3) — 파일 이름을 '본문'으로 검증해
+    '인용 없음'으로 끝내던 fail-open 을 막는다. (긴 한국어 텍스트를 경로로 검사하다 'File name too long' 으로 죽던 문제도 처리)"""
     if target == "-":
         data = sys.stdin.buffer.read() if hasattr(sys.stdin, "buffer") else sys.stdin.read().encode("utf-8")
-        return data.decode("utf-8-sig", errors="replace")
+        return _decode_input(data, "표준입력")
     if len(target) < 1024 and "\n" not in target:
+        p = Path(target).expanduser()
         try:
-            p = Path(target)
-            if p.is_file():
-                return p.read_text(encoding="utf-8-sig")
+            is_file = p.is_file()
         except (OSError, ValueError):
-            pass
+            is_file = False
+        if is_file:
+            try:
+                data = p.read_bytes()
+            except OSError as e:
+                raise UsageError(f"파일을 읽을 수 없음: {target} ({e})")
+            return _decode_input(data, target)
+        t = target.strip()
+        if not re.search(r"\s", t) and (_PATHLIKE_RE.search(t) or t.startswith(("./", "../", "~/", "/", ".\\"))):
+            raise UsageError(f"파일이 없음: {target} — 텍스트를 직접 검사하려면 '-'(표준입력)로 넘기세요")
     return target
 
 

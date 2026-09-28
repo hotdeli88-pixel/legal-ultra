@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import html
 import os
 import re
 import sys
@@ -257,18 +258,22 @@ def quote_found(quote: str, source_text: str, max_gap: int = 300) -> bool:
     if not parts or any(len(p) < 6 for p in parts):
         return False
 
+    failed = set()      # (조각 번호, 시작 위치) — 이미 실패한 상태는 다시 풀지 않는다(반복 원문에서 지수 시간 방지)
+
     def match_from(k: int, prev_end: int) -> bool:
         if k == len(parts):
             return True
+        if (k, prev_end) in failed:
+            return False
         p = parts[k]
         idx = src.find(p, prev_end)
         while idx >= 0:
-            gap = src[prev_end:idx]
-            if len(gap) > max_gap:
-                return False
-            if not _NEGATION_RE.search(gap) and match_from(k + 1, idx + len(p)):
+            if idx - prev_end > max_gap:
+                break
+            if not _NEGATION_RE.search(src, prev_end, idx) and match_from(k + 1, idx + len(p)):
                 return True
             idx = src.find(p, idx + 1)
+        failed.add((k, prev_end))
         return False
 
     idx = src.find(parts[0])
@@ -284,14 +289,28 @@ _SPACES_RE = re.compile("[\u00a0\u2000-\u200a\u202f\u205f\u3000]")
 _FW_DIGITS = {ord("０") + i: ord("0") + i for i in range(10)}
 
 
+_HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|$)", re.S)
+_HTML_BREAK_RE = re.compile(r"<\s*br\s*/?\s*>|<\s*/\s*(?:p|div|li|tr|h[1-6])\s*>", re.I)
+_HTML_TAG_RE = re.compile(r"<\s*/?\s*[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]{0,300})?/?\s*>")
+_MD_UNDERSCORE_RE = re.compile(r"(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])")
+
+
 def prep_text(text: str) -> str:
-    """인용 추출 전 정리: 폭 없는 문자 제거, 특수 공백 → 공백, 전각 숫자 → 반각, 마크다운 굵게(**, __) 제거.
-    (‘근로기준법 제76조의<ZWSP>9’ 가 제76조로 읽히던 문제, **근로기준법** 제23조 가 특정불가가 되던 문제)"""
-    t = _ZW_RE.sub("", text or "")
+    """인용 추출 전 정리 — 검증기가 읽는 글자와 독자가 보는 글자를 맞춘다:
+    HTML 주석(보이지 않음) 삭제, HTML 태그 제거·엔티티 해독, 마크다운 강조(*, _, ~~, `) 제거, 폭 없는 문자 제거,
+    특수 공백 → 공백, 전각 숫자 → 반각. (‘민법 제<!-- -->1200조’·‘민법 제*1200*조’가 화면에는 조문으로 보이는데 추출되지 않던 문제,
+    주석 속 ‘(이하 "근로기준법"이라 한다)’ 정의가 적용되던 문제, ‘근로기준법 제76조의<ZWSP>9’가 제76조로 읽히던 문제)"""
+    t = (text or "").replace("\r\n", "\n")
+    t = _HTML_COMMENT_RE.sub("", t)
+    t = _HTML_BREAK_RE.sub("\n", t)
+    t = _HTML_TAG_RE.sub("", t)
+    t = html.unescape(t)
+    t = _ZW_RE.sub("", t)
     t = _SPACES_RE.sub(" ", t)
     t = t.translate(_FW_DIGITS)
-    t = t.replace("**", "").replace("__", "")
-    return t.replace("\r\n", "\n")
+    t = t.replace("**", "").replace("~~", "").replace("`", "").replace("*", "")
+    t = _MD_UNDERSCORE_RE.sub("", t)
+    return t
 
 
 # ---------------------------------------------------------------------------
