@@ -132,6 +132,7 @@ _ALIAS_DEF_RE = re.compile(
     r"\s*\(\s*이하\s*[‘'\"“]?(?P<alias>[가-힣A-Za-z ]{1,12}?)[’'\"”]?\s*(?:이?라|로)\s*(?:한다|함)\s*\)")
 _TITLE_RE = re.compile(r"^\s*\(([^()]{1,40})\)")
 _QUOTE_RE = re.compile(r"[“\"]([^”\"]{6,600})[”\"]")
+_SENT_END_RE = re.compile(r"(?<!\d)[.!?。](?:\s|$)")   # '2026. 6. 9.' 같은 날짜의 마침표는 문장 끝이 아니다
 _PARTICLE_TAIL_RE = re.compile(r"(?<=[법률령칙정례])(?:상|의|에서|에|은|는|이|가|과|와)$")
 _FUTURE_CTX_RE = re.compile(r"(시행\s*예정|시행예정|개정\s*법률|개정법|개정\s*후|신설\s*예정|공포\s*후)")
 
@@ -363,7 +364,8 @@ def _attach_quotes(text: str, statutes, cases, auths) -> None:
         nl = text.find("\n", c.end)
         stop = min(nxt, nl if nl >= 0 else len(text), c.end + 700)
         qm = _QUOTE_RE.search(text[c.end:stop])
-        if qm and qm.start() <= 120:
+        # 같은 문장 안의 따옴표만 연결한다(“…규정한다. 한편 A는 “…”라고 진술” 같은 다른 문장의 인용은 제외)
+        if qm and qm.start() <= 120 and not _SENT_END_RE.search(text[c.end:c.end + qm.start()]):
             c.quote = qm.group(1).strip()
 
 

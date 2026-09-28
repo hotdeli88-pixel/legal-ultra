@@ -62,6 +62,14 @@ class TestExtract(unittest.TestCase):
         s, _, _ = self.labels("CASE-1\n2026-09-28\n근로기준법 제60조\n행위자 개인의 불법행위 손해배상\n민법 제750조")
         self.assertEqual(s, [("근로기준법", "제60조"), ("민법", "제750조")])
 
+    def test_quote_in_other_sentence_not_attached(self):
+        s, _, _ = extract("민법 제750조는 불법행위 책임을 정한다. 한편 A는 “나는 그 자리에 없었다”고 진술하였다.")
+        self.assertIsNone(s[0].quote)
+        s, _, _ = extract("민법 제750조는 “고의 또는 과실로 인한 위법행위로”라고 정한다.")
+        self.assertEqual(s[0].quote, "고의 또는 과실로 인한 위법행위로")
+        s, _, _ = extract("근로기준법 제60조는 2026. 6. 9. 개정되어 “사용자는 1년간”이라고 정한다.")
+        self.assertEqual(s[0].quote, "사용자는 1년간")
+
     def test_authority(self):
         _, _, a = self.labels("법제처 22-0733 해석, 안건번호 20-0370")
         self.assertEqual(a, ["22-0733", "20-0370"])
