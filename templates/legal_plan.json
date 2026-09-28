@@ -1,76 +1,23 @@
 {
-  "case_id": "CASE-YYYY-NNN",
-  "title": "사안명",
-  "domain": "민사/형사/노동/행정/가사",
-  "facts": "사실관계 요약",
-  "issues": [
-    "쟁점 1",
-    "쟁점 2"
-  ],
+  "_comment": "legal_swarm.py init --plan templates/legal_plan.json 으로 쓰는 태스크 DAG. 기본값(--mode full)과 같다. gate 값: statute_evidence | precedent_evidence | risk_memo | draft | audit | final",
   "tasks": [
-    {
-      "id": "T1_STATUTE",
-      "title": "실정법 조문 전수 조사 및 위임규정/개정이력 대조",
-      "role": "statute_analyst",
-      "kind": "research",
-      "deps": [],
-      "write_paths": ["out/evidence_statute.json"],
-      "acceptance": [
-        "legalize-kr 로컬 법령에서 쟁점 관련 법률, 시행령, 시행규칙 조문 원문 전수 발췌",
-        "공포일/시행일 기준 현재 유효 조문 여부 확인",
-        "위임 규정 및 하위법령 일치 확인"
-      ]
-    },
-    {
-      "id": "T2_PRECEDENT",
-      "title": "대법원 리딩 판례 및 요건사실론/입증책임 법리 분석",
-      "role": "precedent_analyst",
-      "kind": "research",
-      "deps": [],
-      "write_paths": ["out/evidence_precedent.json"],
-      "acceptance": [
-        "쟁점별 대법원 판례 및 판단 기준 2건 이상 확보",
-        "청구원인 및 항변사유의 요건사실과 입증책임 배분 명시",
-        "소멸시효 및 제척기간 검토 완료"
-      ]
-    },
-    {
-      "id": "T3_STRATEGY",
-      "title": "5단 FIRAC 구조 법률의견서 초안 및 분쟁 대응 전략 수립",
-      "role": "counsel_builder",
-      "kind": "build",
-      "deps": ["T1_STATUTE", "T2_PRECEDENT"],
-      "write_paths": ["out/draft_opinion.md"],
-      "acceptance": [
-        "Facts(사실관계), Issues(쟁점), Rules(법령/판례), Application(포섭), Conclusion(결론) 5단 완성",
-        "의뢰인 공격/방어 시나리오 및 승소/패소 리스크 정량 평가",
-        "내용증명/증거수집/소송 등 단계별 Action Plan 체크리스트 포함"
-      ]
-    },
-    {
-      "id": "T4_AUDIT",
-      "title": "독립 법률 감사 (조문/판례 왜곡 및 논리모순 블라인드 검증)",
-      "role": "legal_auditor",
-      "kind": "review",
-      "deps": ["T3_STRATEGY"],
-      "write_paths": ["out/audit_verdict.json"],
-      "acceptance": [
-        "조문 허위인용(Hallucination) 0건 확인",
-        "판례 인용 왜곡 및 오독 0건 확인",
-        "입증책임 배분 및 법적 논리 모순 여부 독립 감사"
-      ]
-    },
-    {
-      "id": "T5_FINAL",
-      "title": "최종 정본 법률의견서 통합 및 의뢰인 보고서 발행",
-      "role": "lead_counsel",
-      "kind": "deliver",
-      "deps": ["T4_AUDIT"],
-      "write_paths": ["out/final_legal_opinion.md"],
-      "acceptance": [
-        "독립 감사의 지적사항 100% 반영된 무결점 최종 자문서 생성",
-        "ADHD-Friendly 초간결 핵심 결론 및 상세 전문 듀얼 레이아웃"
-      ]
-    }
+    {"id": "T1_STATUTE", "role": "statute_analyst", "kind": "research", "deps": [], "outputs": ["evidence_statute.json"], "gate": "statute_evidence",
+     "title": "실정법·위임법령 조사(시행일 기준 현행 조문 확정)",
+     "acceptance": ["모든 provisions[].citation 이 검증기 PASS(VERIFIED)", "인용문(quote)은 원문 그대로", "시행예정·삭제·폐지 여부를 in_force_note 에 기록"]},
+    {"id": "T2_PRECEDENT", "role": "precedent_analyst", "kind": "research", "deps": [], "outputs": ["evidence_precedent.json"], "gate": "precedent_evidence",
+     "title": "판례·헌재결정·유권해석 조사(요건사실·입증책임·시효)",
+     "acceptance": ["모든 precedents[].citation 이 법원·선고일·사건번호까지 VERIFIED", "holding_quote 는 판시사항/판결요지 원문 발췌", "적합한 선례가 없으면 no_precedent_reason 으로 명시"]},
+    {"id": "T3_RISK", "role": "risk_advocate", "kind": "review", "deps": ["T1_STATUTE", "T2_PRECEDENT"], "outputs": ["risk_memo.json"], "gate": "risk_memo",
+     "title": "반대논리·제재·입증책임 리스크 감사(Devil's Advocate)",
+     "acceptance": ["risks[] 각 항목에 severity(high|medium|low)·근거·반대논리·완화책", "벌칙·과태료 조항 인용은 VERIFIED"]},
+    {"id": "T4_DRAFT", "role": "counsel_builder", "kind": "build", "deps": ["T1_STATUTE", "T2_PRECEDENT", "T3_RISK"], "outputs": ["draft_opinion.md"], "gate": "draft",
+     "title": "결론 우선 FIRAC 의견서 초안",
+     "acceptance": ["결론·즉시 행동이 맨 위", "FIRAC 5단", "모든 인용 VERIFIED", "검증 판정·승소확률(%)을 스스로 쓰지 않음"]},
+    {"id": "T5_AUDIT", "role": "legal_auditor", "kind": "audit", "deps": ["T4_DRAFT"], "outputs": [], "gate": "audit",
+     "title": "독립 감사(인용 재검증 + 논리·입증책임·반대논리 반영 심사)",
+     "acceptance": ["legal_swarm.py audit 로만 판정 기록(초안 수정 금지)", "approve 는 검증기 PASS 일 때만 가능"]},
+    {"id": "T6_FINAL", "role": "lead_counsel", "kind": "deliver", "deps": ["T5_AUDIT"], "outputs": [], "gate": "final",
+     "title": "최종본 발행(시스템이 검증·감사 부록을 붙임)",
+     "acceptance": ["legal_swarm.py finalize 로만 발행"]}
   ]
 }

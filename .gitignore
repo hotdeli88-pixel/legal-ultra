@@ -7,3 +7,7 @@ out/
 *.db
 *.db-wal
 *.db-shm
+legal_workspace/
+data/legalize-kr/
+data/precedent-kr/
+.cache/
