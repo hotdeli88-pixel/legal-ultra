@@ -7,7 +7,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from _util import FIX, ROOT
+from _util import FIX, ROOT, history_repo
 
 from citations import Verifier
 from legal_engine import StatuteMirror
@@ -18,7 +18,8 @@ EX = ROOT / "templates" / "examples"
 
 
 def verifier():
-    return Verifier(StatuteMirror(str(FIX / "legalize-kr")), PrecedentMirror(str(FIX / "precedent-kr")),
+    # 실제 판본 이력 발췌(정밀 판정) — 예시 산출물의 인용이 기준일 문언과 맞는지까지 확인한다
+    return Verifier(StatuteMirror(str(history_repo())), PrecedentMirror(str(FIX / "precedent-kr")),
                     api=None, as_of=date(2026, 9, 28))
 
 

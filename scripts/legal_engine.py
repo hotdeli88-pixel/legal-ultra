@@ -70,6 +70,7 @@ class Article:
     deleted_on: Optional[date] = None
     paragraphs: Dict[int, Paragraph] = field(default_factory=dict)
     items: Dict[str, Item] = field(default_factory=dict)  # 항 번호 없이 바로 달린 호
+    headings: List[str] = field(default_factory=list)     # 이 조문을 담은 장·절·관 제목(신설 표시 추적용)
 
     @property
     def label(self) -> str:
@@ -78,6 +79,8 @@ class Article:
     def unit_text(self, hang: Optional[int] = None, ho: Optional[str] = None,
                   mok: Optional[str] = None) -> Optional[str]:
         """인용 단위(조/항/호/목)의 본문. 없으면 None."""
+        if mok is not None and ho is None:
+            return None                      # 목은 호 아래에만 있다
         if hang is None and ho is None:
             return self.text
         items = self.items
@@ -188,6 +191,7 @@ def parse_articles(body: str, line_offset: int = 0) -> List[Article]:
         arts.append(cur)
         cur, buf = None, []
 
+    ctx: Dict[int, str] = {}   # 제목 수준(2=장, 3=절, 4=관) → 제목줄
     for idx, line in enumerate(lines, 1):
         if line.startswith("#"):
             close()
@@ -195,7 +199,13 @@ def parse_articles(body: str, line_offset: int = 0) -> List[Article]:
             if m:
                 cur = Article(
                     jo=int(m.group(1)), sub=int(m.group(2)) if m.group(2) else None,
-                    title=_split_title(m.group(3)), heading=line.strip(), text="", line=idx + line_offset)
+                    title=_split_title(m.group(3)), heading=line.strip(), text="", line=idx + line_offset,
+                    headings=[ctx[k] for k in sorted(ctx)])
+            else:
+                lvl = len(line) - len(line.lstrip("#"))
+                if 2 <= lvl <= 4:
+                    ctx = {k: v for k, v in ctx.items() if k < lvl}
+                    ctx[lvl] = line.strip()
             continue
         if cur is not None:
             buf.append(line)
@@ -237,10 +247,14 @@ def _structure(art: Article, lines: List[str]) -> None:
 
 
 def _git(repo: Path, *args: str, check: bool = False, timeout: int = 120) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-c", "core.quotepath=false", "-C", str(repo), *args],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        check=check, timeout=timeout)
+    """git 이 없거나(FileNotFoundError) 지연 내려받기가 멈추면(TimeoutExpired) 실패 결과를 돌려준다(크래시 금지)."""
+    try:
+        return subprocess.run(
+            ["git", "-c", "core.quotepath=false", "-C", str(repo), *args],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=check, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        return subprocess.CompletedProcess(args=["git", *args], returncode=127, stdout="", stderr=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +293,8 @@ class StatuteMirror:
         self._meta_cache: Dict[str, Dict[str, object]] = {}
         self._git_info: Optional[Dict[str, object]] = None
         self._lock = threading.RLock()
+        self._graph_ok: Optional[bool] = None
+        self._vcache: Dict[Tuple[str, str], List[str]] = {}
 
     @staticmethod
     def _git_has_kr(c: Path) -> bool:
@@ -315,9 +331,17 @@ class StatuteMirror:
         if not self.available:
             return {"available": False, "hint": "legalize-kr 미러 없음: `legal.py setup` 또는 LEGALIZE_KR_PATH 설정"}
         gi = self.git_info()
-        return {"available": True, "root": str(self.repo_root), "law_dirs": len(self.dirs),
-                "git": gi.get("is_git"), "head_date": gi.get("head_date"),
-                "history": bool(gi.get("is_git")) and not gi.get("shallow", True)}
+        mode = self.history_mode()
+        out = {"available": True, "root": str(self.repo_root), "law_dirs": len(self.dirs),
+               "git": gi.get("is_git"), "head_date": gi.get("head_date"),
+               "history": mode == "full", "history_mode": mode}
+        if mode == "full":
+            info = self.repo_root / ".git" / "objects" / "info"
+            out["commit_graph"] = (info / "commit-graph").exists() or (info / "commit-graphs").exists()
+        else:
+            out["history_note"] = ("판본 이력 없음 — 기준일 판정은 개정표시 기준 추정(시행 전 개정이 걸린 조항은 '검증불가'). "
+                                   "정밀 판정: `legal.py setup` (전체 이력 부분 클론)")
+        return out
 
     # ---- 색인 --------------------------------------------------------------
 
@@ -474,74 +498,87 @@ class StatuteMirror:
                 return a
         return None
 
-    def versions(self, doc: LawDoc, limit: int = 400) -> List[Tuple[str, str]]:
-        """(commit, 공포일자) 최신순. 전체 이력 클론에서만 의미가 있다."""
+    # ---- 판본 이력 ------------------------------------------------------------
+
+    def history_mode(self) -> str:
+        """full(전체 이력) | partial(얕은 클론이지만 여러 판본) | none"""
         gi = self.git_info()
-        if not gi.get("is_git") or gi.get("shallow", True):
+        if not gi.get("is_git"):
+            return "none"
+        return "partial" if gi.get("shallow") else "full"
+
+    def ensure_commit_graph(self) -> bool:
+        """경로별 이력 조회(git log -- path)는 10만 커밋 저장소에서 법령당 ~11초 걸린다. changed-path Bloom 필터가 있는
+        commit-graph 를 만들면 0.3초대로 줄어든다(실측, 1회 ~25초). 없으면 한 번 만든다."""
+        if self._graph_ok is not None:
+            return self._graph_ok
+        with self._lock:          # 병렬 검증 스레드가 동시에 만들지 않게
+            if self._graph_ok is not None:
+                return self._graph_ok
+            info = self.repo_root / ".git" / "objects" / "info"
+            if (info / "commit-graph").exists() or (info / "commit-graphs").exists():
+                self._graph_ok = True
+                return True
+            print("[legal-ultra] 최초 1회: 법령 이력 색인(git commit-graph --changed-paths) 생성 중(수십 초)…", file=sys.stderr)
+            r = _git(self.repo_root, "commit-graph", "write", "--reachable", "--changed-paths", timeout=900)
+            self._graph_ok = r.returncode == 0
+            return self._graph_ok
+
+    def version_commits(self, doc: LawDoc, limit: int = 400) -> List[str]:
+        """이 파일을 바꾼 커밋(최신순). HEAD 별로 디스크 캐시."""
+        if self.history_mode() == "none":
             return []
-        r = _git(self.repo_root, "log", f"-n{limit}", "--format=%H|%ad", "--date=short", "--", doc.rel)
-        return [tuple(l.split("|", 1)) for l in r.stdout.splitlines() if "|" in l]  # type: ignore
+        key = (str(self.git_info().get("head")), doc.rel)
+        if key in self._vcache:
+            return self._vcache[key]
+        tag = hashlib.sha1(f"{self.repo_root}|{key[0]}|{doc.rel}".encode("utf-8")).hexdigest()[:16]
+        cache = cache_root() / "versions" / f"{tag}.json"
+        if cache.is_file():
+            try:
+                out = json.loads(cache.read_text(encoding="utf-8"))
+                self._vcache[key] = out
+                return out
+            except (OSError, ValueError):
+                pass
+        if self.history_mode() == "full":
+            self.ensure_commit_graph()
+        r = _git(self.repo_root, "log", f"-n{limit}", "--format=%H", "--", doc.rel, timeout=600)
+        out = [l.strip() for l in r.stdout.splitlines() if l.strip()] if r.returncode == 0 else []
+        self._vcache[key] = out
+        if out:
+            try:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                cache.write_text(json.dumps(out), encoding="utf-8")
+            except OSError:
+                pass
+        return out
 
-    def in_force_revision(self, doc: LawDoc, as_of: date) -> Optional[Tuple[str, Dict[str, object]]]:
-        """as_of 에 시행 중인 판본(커밋, 메타). 이력이 없으면 None."""
-        for commit, _ in self.versions(doc):
-            meta = self._articles_for(doc.rel, commit)[1]
-            eff = parse_date(meta.get("시행일자"))
-            if eff and eff <= as_of:
-                return commit, meta
-        return None
+    @lru_cache(maxsize=256)
+    def load_version(self, rel: str, commit: str):
+        """(조문들, 메타, 본문) — 부분 클론이면 이때 해당 판본 blob 을 지연 내려받는다. 실패하면 None."""
+        r = _git(self.repo_root, "show", f"{commit}:{rel}", timeout=60)
+        if r.returncode != 0:
+            return None
+        fm, body = split_frontmatter(r.stdout)
+        return tuple(parse_articles(body)), parse_frontmatter_text(fm), body
 
-    # ---- 시행일 판정 ---------------------------------------------------------
-
-    def temporal_check(self, doc: LawDoc, art: Article, unit_text: str, as_of: date,
-                       hang: Optional[int] = None, ho: Optional[str] = None) -> Dict[str, object]:
-        """인용 단위가 as_of 에 시행 중인지 판정.
-
-        반환: {"state": in_force|pending_new|pending_text|pending_delete|unknown, "note": str, "precise": bool}
-        - HEAD 판본의 시행일자 ≤ as_of → in_force
-        - HEAD 가 시행예정 판본이면: 전체 이력이 있으면 시행 중 판본에서 직접 확인(precise),
-          없으면 개정표시(<신설 공포일>, <개정 공포일>, 삭제 <공포일>)로 판정
-        """
-        eff, prom = doc.effective, doc.promulgated
-        recent = sorted({d for _, d in amendment_markers(unit_text or "")
-                         if d <= as_of and (as_of - d).days <= 400 and d != prom})
-        recent_note = ("최근 개정분(" + ", ".join(iso(d) for d in recent) + ") 포함 — 부칙상 조항별 시행일은 "
-                       "전체 이력 미러 또는 DRF(조문시행일자)로 확인 권장") if recent else ""
-        if eff is None or eff <= as_of:
-            return {"state": "in_force", "note": recent_note, "precise": not recent}
-        base_note = f"미러 판본은 {iso(prom)} 공포·{iso(eff)} 시행예정(as-of {iso(as_of)} 기준 미시행)"
-        rev = self.in_force_revision(doc, as_of)
-        if rev is not None:
-            commit, meta = rev
-            old = self.find_article(doc, art.jo, art.sub, rev=commit)
-            label = f"시행 중 판본(공포 {iso(parse_date(meta.get('공포일자')))}, 시행 {iso(parse_date(meta.get('시행일자')))}, {commit[:10]})"
-            if old is None or old.deleted:
-                return {"state": "pending_new", "precise": True,
-                        "note": f"{base_note}; {label}에는 이 조문이 없음"}
-            if old.unit_text(hang, ho) is None:
-                return {"state": "pending_new", "precise": True,
-                        "note": f"{base_note}; {label}에는 이 항·호가 없음"}
-            if (old.unit_text(hang, ho) or "").strip() != (unit_text or "").strip():
-                return {"state": "pending_text", "precise": True,
-                        "note": f"{base_note}; {label}과 문언이 다름 — 현행 문언으로 인용할 것"}
-            return {"state": "in_force", "precise": True, "note": f"{base_note}; {label}과 동일"}
-        # 이력 없음 → 개정표시 휴리스틱
-        marks = amendment_markers(unit_text or "")
-        art_marks = amendment_markers(art.text)
-        on_prom = [k for k, d in marks if prom and d == prom]
-        if art.deleted and art.deleted_on and prom and art.deleted_on == prom:
-            return {"state": "pending_delete", "precise": False,
-                    "note": f"{base_note}; 이 조문은 시행예정 개정으로 삭제될 예정(현재는 시행 중)"}
-        if any(k in ("신설", "본조신설") for k in on_prom) or any(
-                k == "본조신설" and prom and d == prom for k, d in art_marks):
-            return {"state": "pending_new", "precise": False,
-                    "note": f"{base_note}; 이 조항은 {iso(prom)} 신설분이라 아직 시행 전"}
-        if on_prom:
-            return {"state": "pending_text", "precise": False,
-                    "note": f"{base_note}; 이 조항은 {iso(prom)} 개정분 — 현행 문언과 다를 수 있음"}
-        return {"state": "in_force", "precise": False,
-                "note": f"{base_note}; 이 조항에는 시행예정 개정 표시가 없음(개정 대상 아님으로 추정)"
-                        + (f"; {recent_note}" if recent_note else "")}
+    def unit_status(self, doc: LawDoc, jo: int, sub: Optional[int], hang: Optional[int], ho: Optional[str],
+                    mok: Optional[str], as_of: date):
+        """인용 단위의 기준일 시행 상태. 전체 이력이 있으면 정밀 판정, 없으면 fail-closed 추정."""
+        from temporal import parse_buchik, unit_status_heuristic, unit_status_precise
+        commits = self.version_commits(doc)
+        if len(commits) >= 2:
+            st = unit_status_precise(commits, lambda c: self.load_version(doc.rel, c), as_of, jo, sub, hang, ho, mok)
+            if st is not None:
+                return st
+        arts, meta = self._articles_for(doc.rel)
+        text = self._read(doc.rel) or ""
+        body = split_frontmatter(text)[1]
+        art = next((a for a in arts if a.jo == jo and a.sub == sub), None)
+        st = unit_status_heuristic(art, parse_buchik(body), doc.promulgated, doc.effective, as_of, hang, ho, mok)
+        if len(commits) >= 2:
+            st.notes.insert(0, "판본 이력으로 판정하지 못해(지연 내려받기 실패 등) 최신 공포본 기준으로 추정")
+        return st
 
     # ---- 검색 --------------------------------------------------------------
 
@@ -654,8 +691,12 @@ class StatuteMirror:
         for line in r.stdout.splitlines():
             if line.count("|") >= 2:
                 h, d, s = line.split("|", 2)
+                # 얕은 클론의 경계 커밋은 모든 파일을 '추가'한 것처럼 보여 다른 법령의 커밋이 섞인다 → 제목으로 거른다
+                if gi.get("shallow") and normalize_law_name(res.doc.title) not in normalize_law_name(s):
+                    continue
                 items.append({"commit": h, "date": d, "subject": s})
-        note = "얕은 클론(--depth 1)이라 최신 커밋만 보임 — 전체 이력은 `legal.py setup --full-history`" if gi.get("shallow") else ""
+        note = ("얕은 클론이라 이력이 잘려 있음(다른 법령의 경계 커밋은 제외함) — 전체 이력은 `legal.py setup`"
+                if gi.get("shallow") else "")
         return {"law": res.doc.title, "file": res.doc.rel, "commits": items, "note": note}
 
 
@@ -681,7 +722,14 @@ def parse_article_no(text: str) -> Tuple[int, Optional[int]]:
 
 def cli(argv: Optional[List[str]] = None) -> int:
     configure_stdout()
-    argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        return _cli(list(sys.argv[1:] if argv is None else argv))
+    except ValueError as e:        # 조문 번호·건수 형식 오류 → 트레이스백 대신 안내
+        print(f"오류: {e}")
+        return 2
+
+
+def _cli(argv: List[str]) -> int:
     if not argv or argv[0] in ("-h", "--help"):
         print("사용법 (v1 호환, 새 통합 CLI는 scripts/legal.py):")
         print("  python legal_engine.py get <법령명> <조문번호> [법률|시행령|시행규칙]")
@@ -720,6 +768,8 @@ def cli(argv: Optional[List[str]] = None) -> int:
         return 0
     if cmd == "search" and len(argv) >= 2:
         law = argv[2] if len(argv) > 2 and argv[2] != "all" else None
+        if len(argv) > 3 and not argv[3].isdigit():
+            raise ValueError(f"건수는 숫자여야 함: {argv[3]!r}")
         limit = int(argv[3]) if len(argv) > 3 else 10
         hits = m.search(argv[1], law, limit)
         print(f"검색 결과: '{argv[1]}' (총 {len(hits)}건)")

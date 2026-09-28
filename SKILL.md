@@ -4,7 +4,7 @@ description: "대한민국 법률 검토·자문 에이전트 팀 스킬(v2, 구
 license: MIT
 compatibility: "Python 3.10+ (표준 라이브러리만), git. 선택: legalize-kr/precedent-kr 로컬 미러, law.go.kr 접속(DRF API). Claude Code(Agent 도구로 서브에이전트), 기타 에이전트 런타임(서브에이전트 없으면 순차 역할 수행)."
 metadata:
-  version: "2.0.0"
+  version: "2.1.0"
   supersedes: "law 1.0.0, legal-ultra 1.0.0"
   architecture: "source-grounded blackboard swarm with enforced citation gates"
 ---
@@ -28,14 +28,19 @@ python3 scripts/legal.py status
 | 법제처 DRF API (`LAW_OPENAPI_OC`) | 헌재 결정·법령해석례·부처 해석·위원회 결정·행정규칙·자치법규·3단비교·교차확인 | 해당 자료는 `UNVERIFIABLE` |
 
 출처가 없으면 사용자에게 알리고 `python3 scripts/legal.py setup`(미러 설치 안내·실행)을 제안한다. 설치·환경변수·한계는 `references/sources.md`.
+`status` 가 "판본 이력 없음"이면 기준일 판정이 개정표시 기준 추정이라 시행 전 개정이 걸린 조항은 `UNVERIFIABLE` 가 된다 —
+정밀 판정에는 `setup`(기본: 전체 이력 부분 클론, 약 540MB)이 필요하다고 알린다.
 
 ## 1. 철칙 — 모든 역할 공통
 
 1. **기억으로 인용 금지.** 조문·판례·해석례는 `legal.py article|precedent|constitutional|interpretation`으로 원문을 연 뒤에만 쓴다.
 2. **인용 형식**(검증기가 읽는 형식): `「정식 법령명」 제N조의M제K항제L호`, 제목을 붙이면 원문 제목 그대로 `제750조(불법행위의 내용)`.
    판례는 `대법원 2021. 9. 16. 선고 2021다219529 판결`처럼 **법원·선고일·사건번호**를 함께. 약칭(중처법, 근퇴법)·법령명 없는 `제15조` 금지. 세부는 `references/citation_rules.md`.
-3. **따옴표 안은 원문 그대로**(생략은 `…`). 요약·의역은 따옴표 없이 쓴다 — 검증기가 따옴표 속 문구를 원문과 대조한다.
-4. **기준일(as-of) 시행 조문만 현행으로.** 미러에는 시행예정 판본이 들어 있을 수 있다(예: 2027-06-10 시행 근로기준법 개정). 시행 전 조항은 "시행예정"이라고 밝힌다.
+3. **따옴표 안은 원문 그대로**(생략은 `…`, 뜻을 뒤집는 생략 금지). 요약·의역은 따옴표 없이 쓴다. 원문 인용은 출처와 같은 문장에 두거나
+   `“…”(「민법」 제750조)`처럼 붙인다 — 검증기가 인용한 조·항(판례는 판시사항·판결요지)의 기준일 문언과 대조하고, 출처를 못 찾는 원문 인용은 실패다.
+   판결 이유 본문을 인용할 때는 "위 판결은 이유에서 “…”라고 판단하였다"처럼 밝힌다.
+4. **기준일(as-of) 시행 조문만 현행으로.** 미러에는 시행예정 판본이 들어 있을 수 있다(예: 2027-06-10 시행 근로기준법 개정). 시행 전 조항은
+   "시행 예정"이라고 밝히고, 구법은 `구 「법령」(YYYY. M. D. 법률 제N호로 개정되기 전의 것) 제N조`로 판본을 특정한다.
 5. **판정은 시스템이 붙인다.** 초안에 PASS/APPROVED/무결점을 쓰지 않는다. 검증·감사 결과는 `finalize`가 부록으로 붙인다.
 6. **확률 숫자 금지.** 가능성은 `높음/중간/낮음` + 근거 2~3개 + 불확실 요인으로 쓴다(근거 없는 %는 환각이다).
 7. **검증 결과를 숨기지 않는다.** `FAIL`은 고치고, `INCOMPLETE`(출처 부재)는 사용자에게 그대로 알린다.
@@ -50,7 +55,7 @@ python3 scripts/legal.py status
 | `administrative` | 과태료·시정명령·영업정지 대응, 이의신청·행정심판 | full 과 같음, 불복 기간을 결론에 |
 | `statute` | 요건·위임체계 분석 | T1 → T3 → T4 → T5 → T6 |
 | `precedent` | 선례 조사 | T2 → T4 → T5 → T6 |
-| `verify` | 이미 있는 문서의 인용 감사 | T5 → T6 (`init --mode verify --draft 파일`) |
+| `verify` | 이미 있는 문서의 인용 감사(형식 검사 없음) | T5 → T6 (`init --mode verify --draft 파일`) |
 
 **간단한 질문**(조문 하나 확인, 사건번호 확인)은 작업판 없이 `legal.py article` / `legal.py precedent`로 답하고, 답변 초안을
 `python3 scripts/legal.py verify -` 에 넣어 PASS 를 확인한 뒤 보낸다.
@@ -86,9 +91,10 @@ python3 scripts/legal_swarm.py board --case-id <ID>
 ```
 
 - **병렬**: T1·T2 는 의존성이 없으니 동시에 배정한다. Claude Code 에서는 Agent 도구로 역할별 서브에이전트를 **한 메시지에서 함께** 띄우고,
-  각자에게 claim 패킷 전체와 `references/roles.md`의 해당 역할 지시문을 준다. 서브에이전트가 없으면 수석이 역할을 순서대로 수행하되
-  반드시 claim/submit 을 거친다(게이트는 동일하게 강제된다).
-- **감사 독립성**: 감사관은 초안을 고치지 않는다. 문제는 `--issues`로 적어 반려하고, 집필관이 `revision_feedback`을 받아 고친다.
+  각자에게 claim 패킷 전체와 `references/roles.md`의 해당 역할 지시문을 준다. 서브에이전트가 없으면 `init --single-agent` 로 사안을 만들고
+  수석이 역할을 순서대로 수행하되 반드시 claim/submit 을 거친다(게이트는 동일하게 강제되고, 최종본에 '단일 에이전트 실행'이 공개된다).
+- **감사 독립성**: 감사관은 T1~T4 를 맡지 않은 **새 서브에이전트**다(작업판이 같은 작업자 이름의 감사를 거부한다). 초안을 고치지 않고,
+  문제는 `--issues`로 적어 반려하며, 집필관이 `revision_feedback`을 받아 고친다.
 - **게이트 실패 시**: submit 출력의 검증 보고서에서 ❌ 항목을 원문으로 다시 확인해 고친 뒤 같은 token 으로 다시 submit 한다.
   무엇이 강제되는지: `references/gates.md`.
 - **발행 후**: `final_legal_opinion.md` 경로와 결론 요약, 검증 판정(PASS/INCOMPLETE), 사용자가 확인할 한계를 알린다.

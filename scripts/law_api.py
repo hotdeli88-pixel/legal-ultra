@@ -302,6 +302,11 @@ class DrfClient:
             ok = [i for i in versions if (parse_date(i.get("시행일자")) or as_of) <= as_of]
             ok.sort(key=lambda i: i.get("시행일자", ""), reverse=True)
             chosen = ok[0] if ok else None
+            if chosen is None:
+                # 기준일에 시행 중인 판본이 없다 = 그 날에는 아직 없던 법령(현행본으로 대신 확인하면 안 된다)
+                first = min((i.get("시행일자", "") for i in versions), default="")
+                return {"status": "not_in_force", "name": official, "first_effective": first,
+                        "versions": [(i.get("시행일자"), i.get("현행연혁코드")) for i in versions]}
         if chosen is None:
             cur = [i for i in versions if "현행" in i.get("현행연혁코드", "")]
             chosen = cur[0] if cur else versions[0]
@@ -354,7 +359,8 @@ class DrfClient:
             arts.append({"jo": jo, "sub": sub, "title": f.get("조문제목", ""),
                          "시행일자": f.get("조문시행일자", ""), "text": "\n".join(t for t in texts if t),
                          "paragraphs": paragraphs, "items": items,
-                         "deleted": bool(re.match(r"^제\d+조(?:의\d+)?\s*삭제", f.get("조문내용", "")))})
+                         "deleted": bool(re.match(r"^제\d+조(?:의\d+)?\s*삭제", f.get("조문내용", ""))),
+                         "article": drf_article(u, f, jo, sub)})
         return {"info": info, "articles": arts}
 
     def three_tier(self, mst: str, knd: str = "2") -> Dict[str, object]:
@@ -410,6 +416,50 @@ class DrfClient:
     def interpretation_body(self, expc_id: str, target: str = "expc") -> Optional[Dict[str, str]]:
         root = self.body(target, expc_id)
         return _flat(root) if root is not None else None
+
+
+_MOK_LINE_RE = re.compile(r"^\s*([가-힣])\s*\.\s*")
+
+
+def drf_article(u: ET.Element, f: Dict[str, str], jo: int, sub: Optional[int]):
+    """DRF 조문단위 → legal_engine.Article (로컬 미러와 같은 구조: 항·호·목). 조·항·호·목과 삭제 판정을
+    두 출처에서 같은 코드(Article.unit_text, temporal.is_deleted_unit)로 하기 위함."""
+    from legal_engine import Article, Item, Paragraph
+    head = f.get("조문내용", "")
+    art = Article(jo=jo, sub=sub, title=f.get("조문제목", ""), heading=head.split("\n")[0][:200], text="", line=0)
+    lines = [re.sub(r"^제\d+조(?:의\d+)?\s*(?:\([^)]*\))?\s*", "", head).strip()]
+    for h in u.findall("항"):
+        hf = _flat(h)
+        n = _circled_to_int(hf.get("항번호", ""))
+        ptxt = hf.get("항내용", "")
+        para = None
+        if n:
+            para = Paragraph(no=n, text=ptxt)
+            art.paragraphs[n] = para
+            lines.append(ptxt)
+        for ho in h.findall("호"):
+            hof = _flat(ho)
+            ino = re.sub(r"[.\s]", "", hof.get("호번호", ""))
+            item = Item(no=ino, text=hof.get("호내용", ""))
+            for mok in ho.findall("목"):
+                mf = _flat(mok)
+                # 목내용 하나에 여러 목(가.·나.)이 줄바꿈으로 들어오는 응답도 있다
+                chunk = [x for x in (mf.get("목내용", "") or "").split("\n") if x.strip()]
+                for line in chunk:
+                    mm = _MOK_LINE_RE.match(line)
+                    key = mm.group(1) if mm else re.sub(r"[.\s]", "", mf.get("목번호", ""))[:1]
+                    if key:
+                        item.subitems[key] = (item.subitems.get(key, "") + "\n" + line.strip()).strip()
+            (para.items if para else art.items)[ino] = item
+            lines.append(item.text)
+            lines += list(item.subitems.values())
+    art.text = "\n".join(x for x in lines if x)
+    body = art.text.strip()
+    m = re.match(r"^삭제\s*(?:<([^>]*)>)?\s*$", body)
+    if m and not art.paragraphs and not art.items:
+        art.deleted = True
+        art.deleted_on = parse_date(m.group(1)) if m.group(1) else None
+    return art
 
 
 def _circled_to_int(s: str) -> int:

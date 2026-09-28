@@ -77,8 +77,12 @@ class PrecEntry:
 
 
 def _git(repo: Path, *args: str, timeout: int = 300) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-c", "core.quotepath=false", "-C", str(repo), *args],
-                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    """git 이 없거나(FileNotFoundError) 지연 내려받기가 멈추면(TimeoutExpired) 실패 결과를 돌려준다(크래시 금지)."""
+    try:
+        return subprocess.run(["git", "-c", "core.quotepath=false", "-C", str(repo), *args],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        return subprocess.CompletedProcess(args=["git", *args], returncode=127, stdout="", stderr=str(e))
 
 
 class PrecedentMirror:

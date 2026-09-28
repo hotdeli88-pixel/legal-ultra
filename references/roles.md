@@ -33,7 +33,7 @@
       "title": "직장 내 괴롭힘의 금지",
       "quote": "사용자 또는 근로자는 직장에서의 지위 또는 관계 등의 우위를 이용하여 업무상 적정범위를 넘어 다른 근로자에게 신체적ㆍ정신적 고통을 주거나 근무환경을 악화시키는 행위",
       "relevance": "쟁점 1(괴롭힘 해당 여부)의 요건 규정",
-      "in_force_note": "미러 판본은 2027-06-10 시행예정이나 이 조문은 그 개정 대상 아님(검증기 경고 참조)"
+      "in_force_note": "최신 공포본은 2027-06-10 시행이나 이 조문은 그 개정 대상이 아님(검증기: 판본 이력 대조)"
     }
   ],
   "delegated": [{"citation": "근로기준법 시행령 제33조", "relevance": "…"}],
@@ -41,7 +41,8 @@
 }
 ```
 
-게이트: `provisions[]` 가 비면 거부. 모든 `citation`(+`quote`)이 검증기 `VERIFIED` 여야 통과.
+게이트: `provisions[]` 가 비면 거부. 항목마다 `citation` 에는 인용 **하나**(나열은 항목을 나눈다), `quote` 는 그 인용 단위(항까지 썼으면 그 항)의
+기준일 문언에서 복사 — 검증기가 둘을 짝지어 대조하고 전부 `VERIFIED` 여야 통과. 구법은 `구 「법령」(YYYY. M. D. 법률 제N호로 개정되기 전의 것) 제N조`.
 
 ## 3. `precedent_analyst` — 판례·유권해석 조사관 → `evidence_precedent.json`
 
@@ -70,7 +71,8 @@
 }
 ```
 
-게이트: 판례마다 `holding_quote` 필수, 법원·선고일·사건번호·인용문이 모두 `VERIFIED` 여야 통과.
+게이트: 판례마다 `holding_quote`(정규화 10자 이상, 판시사항·판결요지에서 복사) 필수, 법원·선고일·사건번호·인용문이 모두 `VERIFIED` 여야 통과.
+하급심은 법원명까지 쓴다. 판결 이유 본문을 인용해야 하면 citation 에 '… 판결 이유'라고 밝힌다.
 헌재 결정·해석례는 DRF API 가 없으면 `UNVERIFIABLE` → 수석과 상의해 `--accept-incomplete` 여부를 정한다.
 
 ## 4. `risk_advocate` — 반대논리·리스크 감사관 (Devil's Advocate) → `risk_memo.json`
@@ -97,7 +99,7 @@
 }
 ```
 
-게이트: 각 risk 에 `risk`·`severity(high|medium|low)`·`counter_argument`·`mitigation` 필수, 들어 있는 인용은 전부 `VERIFIED`.
+게이트: 각 risk 에 `risk`·`severity(high|medium|low)`·`counter_argument`·`mitigation` 필수, `basis[]` 는 인용 하나씩, 서술 속 인용까지 전부 `VERIFIED`.
 
 ## 5. `counsel_builder` — 전략·의견서 집필관 → `draft_opinion.md`
 
@@ -111,6 +113,9 @@
 게이트: 자기 판정 문구·수치 확률 금지, 결론이 첫 1,200자 안, FIRAC 요소, 모든 인용 `VERIFIED`.
 
 ## 6. `legal_auditor` — 독립 감사관 (쓰기 권한 없음)
+
+수석은 감사관을 T1~T4 를 맡지 않은 **새 서브에이전트**(새 컨텍스트, 다른 worker 이름)로 띄운다. 작업판은 조사·집필을 claim 한 적 있는
+worker 의 감사를 거부한다(단일 에이전트 런타임은 `init --single-agent` 로 명시하고 최종본에 공개된다).
 
 **지시문**
 > 너는 독립 감사관이다. 초안·증거를 **읽기만** 한다(파일 수정 금지). 먼저 `legal.py verify <초안> --as-of <as_of> --evidence <증거들>` 로
@@ -128,4 +133,4 @@
 | `evidence_precedent.json` | precedent_analyst | |
 | `risk_memo.json` | risk_advocate | |
 | `draft_opinion.md` | counsel_builder | 승인 시 SHA-256 고정 |
-| `gate_T*.md`, `verification_report.md`, `audit_verdict.json`, `final_legal_opinion.md` | 시스템 | 사람·에이전트가 쓰지 않는다 |
+| `gate_T*.md`, `verification_report.md`, `audit_verdict.json`, `final_legal_opinion.md` | 시스템 | 사람·에이전트가 쓰지 않는다. 최종본 부록 A 는 파일이 아니라 감사 시점에 DB 에 고정된 보고서로 만든다 |

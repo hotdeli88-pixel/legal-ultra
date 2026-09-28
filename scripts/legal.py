@@ -1,9 +1,9 @@
 """legal.py - legal-ultra v2 통합 CLI (조사·검증 도구). 추론은 에이전트가, 사실 확인은 이 도구가 한다.
 
   python legal.py status                              출처 상태(legalize-kr · precedent-kr · 법제처 DRF API)
-  python legal.py setup [--dest DIR] [--full-history] [--precedent-bodies]
+  python legal.py setup [--dest DIR] [--shallow] [--precedent-bodies]
   python legal.py law <법령명>                        법령 해석(정식명·판본·시행일)
-  python legal.py article <법령명> <조문> [--hang N] [--ho N] [--as-of YYYY-MM-DD] [--api]
+  python legal.py article <법령명> <조문> [--hang N] [--ho N] [--mok 가] [--as-of YYYY-MM-DD] [--api]
   python legal.py search <키워드> [--law 법령명] [--limit N]
   python legal.py delegated <법령명> <조문> [--api]     위임 조문(시행령·시행규칙) 연계
   python legal.py history <법령명> [-n N]
@@ -17,6 +17,7 @@
   python legal.py targets | api-probe
 
 종료 코드(verify): 0=PASS, 1=FAIL, 2=INCOMPLETE/NO_CITATIONS, 3=사용 오류
+종료 코드(article): 0=기준일 시행 중, 1=없음·삭제·시행 전, 2=판정 불가(이력 부족), 3=사용 오류
 """
 
 from __future__ import annotations
@@ -46,12 +47,16 @@ def _out(obj, as_json: bool) -> None:
         print(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
 
 
+class UsageError(Exception):
+    """사용 오류 → 종료 코드 3"""
+
+
 def _as_of(v: Optional[str]):
     if not v:
         return today()
     d = parse_date(v)
     if not d:
-        raise SystemExit(f"--as-of 형식 오류: {v} (YYYY-MM-DD)")
+        raise UsageError(f"--as-of 형식 오류: {v} (YYYY-MM-DD)")
     return d
 
 
@@ -72,8 +77,12 @@ def cmd_status(args) -> int:
     lk, pk, ap = st["legalize-kr"], st["precedent-kr"], st["drf_api"]
     print("legal-ultra 출처 상태")
     if lk["available"]:
-        hist = "있음" if lk.get("history") else "없음(시행예정 판본은 개정표시로 판정)"
-        print("- legalize-kr : ✅ %s (법령 %s개, 미러 %s, 전체이력 %s)" % (lk["root"], lk["law_dirs"], lk.get("head_date"), hist))
+        mode = lk.get("history_mode")
+        hist = {"full": "전체(기준일 정밀 판정)" + ("" if lk.get("commit_graph") else " — 경로 색인 없음: 첫 검증 때 1회 생성"),
+                "partial": "일부(얕은 클론)", "none": "없음"}.get(mode, str(mode))
+        print("- legalize-kr : ✅ %s (법령 %s개, 미러 %s, 판본 이력 %s)" % (lk["root"], lk["law_dirs"], lk.get("head_date"), hist))
+        if mode != "full":
+            print("  ⚠ " + lk.get("history_note", ""))
     else:
         print("- legalize-kr : ❌ " + lk["hint"])
     if pk["available"]:
@@ -95,8 +104,15 @@ def cmd_setup(args) -> int:
     plans = []
     lk = dest / "legalize-kr"
     if not lk.exists():
-        depth = [] if args.full_history else ["--depth", "1"]
-        plans.append(["git", "clone", *depth, "https://github.com/legalize-kr/legalize-kr.git", str(lk)])
+        if args.shallow:   # 이력 없음: 빠르지만 기준일 판정이 개정표시 기준 추정(시행 전 개정이 걸린 조항은 검증불가)
+            plans.append(["git", "clone", "--depth", "1", "https://github.com/legalize-kr/legalize-kr.git", str(lk)])
+        else:
+            # 전체 이력 + 지연 blob: 커밋 10만여 개 이력 196MB(실측 25초) + 현행 본문 체크아웃(31초, 합계 약 540MB).
+            # 과거 판본 본문은 기준일 판정에 필요할 때만 내려받는다. 경로별 이력 조회용 commit-graph(Bloom 필터)도 만든다.
+            plans.append(["git", "clone", "--filter=blob:none", "--no-checkout",
+                          "https://github.com/legalize-kr/legalize-kr.git", str(lk)])
+            plans.append(["git", "-C", str(lk), "checkout"])
+            plans.append(["git", "-C", str(lk), "commit-graph", "write", "--reachable", "--changed-paths"])
     pk = dest / "precedent-kr"
     if not args.no_precedents and not pk.exists():
         if args.precedent_bodies:
@@ -141,10 +157,15 @@ def cmd_law(args) -> int:
     return 0 if r.status == "ok" or out.get("drf", {}).get("status") == "ok" else 1
 
 
+_STATE_LABEL = {"in_force": "기준일 시행 중", "absent": "기준일에 없음(미신설·시행 전)", "deleted": "삭제됨",
+                "unknown": "판정 불가(이력 부족)"}
+
+
 def cmd_article(args) -> int:
     sm = StatuteMirror()
     as_of = _as_of(args.as_of)
     jo, sub = parse_article_no(args.number)
+    ho = str(args.ho).replace("호", "") if args.ho else None
     res: dict = {"query": f"{args.law} {args.number}", "as_of": iso(as_of)}
     if sm.available:
         r = sm.resolve(args.law)
@@ -152,14 +173,13 @@ def cmd_article(args) -> int:
             res.update(status="not_found", candidates=r.candidates, note=r.note)
         else:
             a = sm.find_article(r.doc, jo, sub)
-            if a is None:
-                res.update(status="not_found", doc=r.doc.summary(), note=f"{a and a.label or '해당 조문'} 없음")
-            else:
-                unit = a.unit_text(args.hang, args.ho)
-                t = sm.temporal_check(r.doc, a, unit or a.text, as_of, args.hang, args.ho)
-                res.update(status="ok" if unit is not None else "unit_not_found", doc=r.doc.summary(),
-                           article=a.label, title=a.title, deleted=a.deleted, temporal=t,
-                           text=(unit if unit is not None else a.text))
+            st = sm.unit_status(r.doc, jo, sub, args.hang, ho, args.mok, as_of)
+            head_unit = a.unit_text(args.hang, ho, args.mok) if a is not None else None
+            res.update(status=st.state, doc=r.doc.summary(), article=f"제{jo}조" + (f"의{sub}" if sub else ""),
+                       title=st.title or (a.title if a else None), precise=st.precise, version=st.version,
+                       notes=st.notes, pending_change=st.pending_change,
+                       text=st.text if st.state in ("in_force", "deleted") else None,
+                       head_text=head_unit if (st.state != "in_force" or st.pending_change) else None)
     if args.api or not sm.available:
         try:
             api = _api(args)
@@ -177,20 +197,25 @@ def cmd_article(args) -> int:
             res["drf_error"] = str(e)
     if args.json:
         _out(res, True)
-    else:
-        if res.get("status") == "ok":
-            d = res["doc"]
-            print(f"[{d['title']} {res['article']} ({res['title']})]  {d['file']}")
-            print(f"공포 {d['공포일자']} · 시행 {d['시행일자']} · 상태 {d['상태']} · 기준일 {res['as_of']}")
-            if res["deleted"]:
-                print("⚠ 삭제된 조문")
-            if res["temporal"]["state"] != "in_force" or res["temporal"].get("note"):
-                print(f"⚠ 시행 판정: {res['temporal']['state']} — {res['temporal']['note']}")
+    elif res.get("doc"):
+        d = res["doc"]
+        unit = res["article"] + (f"제{args.hang}항" if args.hang else "") + (f"제{ho}호" if ho else "") + (f"{args.mok}목" if args.mok else "")
+        print(f"[{d['title']} {unit} ({res.get('title') or '제목 없음'})]  {d['file']}")
+        print(f"최신 공포 {d['공포일자']} · 시행 {d['시행일자']} · 기준일 {res['as_of']} → {_STATE_LABEL.get(res['status'], res['status'])}"
+              + (" (판본 이력 대조)" if res.get("precise") else " (개정표시 기준 추정)"))
+        for n in res.get("notes") or []:
+            print(f"⚠ {n}")
+        if res.get("text"):
             print("-" * 60)
             print(res["text"])
-        else:
-            _out(res, True)
-    return 0 if res.get("status") == "ok" or res.get("drf", {}).get("found") else 1
+        if res.get("head_text"):
+            print("-" * 60 + "\n[최신 공포본 문언 — 기준일에 아직 시행 전일 수 있음]")
+            print(res["head_text"])
+    else:
+        _out(res, True)
+    if res.get("status") == "in_force" or (not sm.available and res.get("drf", {}).get("found")):
+        return 0
+    return 2 if res.get("status") == "unknown" else 1
 
 
 def cmd_search(args) -> int:
@@ -371,11 +396,18 @@ def build_verifier(args) -> Verifier:
 
 
 def read_input(target: str) -> str:
+    """'-' = 표준입력, 있는 파일 경로면 그 내용(UTF-8, BOM 허용), 아니면 인자 자체를 텍스트로 본다.
+    (긴 한국어 텍스트를 경로로 검사하다 'File name too long' 으로 죽던 문제 수정)"""
     if target == "-":
-        return sys.stdin.read()
-    p = Path(target)
-    if p.is_file():
-        return p.read_text(encoding="utf-8")
+        data = sys.stdin.buffer.read() if hasattr(sys.stdin, "buffer") else sys.stdin.read().encode("utf-8")
+        return data.decode("utf-8-sig", errors="replace")
+    if len(target) < 1024 and "\n" not in target:
+        try:
+            p = Path(target)
+            if p.is_file():
+                return p.read_text(encoding="utf-8-sig")
+        except (OSError, ValueError):
+            pass
     return target
 
 
@@ -423,7 +455,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     add("status", cmd_status, help="출처 상태")
     p = add("setup", cmd_setup, help="legalize-kr / precedent-kr 미러 설치")
     p.add_argument("--dest")
-    p.add_argument("--full-history", action="store_true", help="legalize-kr 전체 이력(시행일 기준 정밀 판정용)")
+    p.add_argument("--shallow", action="store_true", help="legalize-kr 이력 없이 최신본만(빠름, 기준일 판정은 추정·검증불가 증가)")
+    p.add_argument("--full-history", action="store_true", help=argparse.SUPPRESS)   # v2.0 호환: 이제 기본값
     p.add_argument("--precedent-bodies", action="store_true", help="precedent-kr 본문까지 전부 받기(수 GB)")
     p.add_argument("--no-precedents", action="store_true")
     p.add_argument("--dry-run", action="store_true")
@@ -433,7 +466,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("law")
     p.add_argument("number")
     p.add_argument("--hang", type=int)
-    p.add_argument("--ho")
+    p.add_argument("--ho", help="호 번호(예: 3, 1의2)")
+    p.add_argument("--mok", help="목(예: 가)")
     p.add_argument("--as-of")
     p.add_argument("--api", action="store_true", help="DRF 로 교차 확인")
     p = add("search", cmd_search, help="법령 본문 검색(legalize-kr)")
@@ -491,8 +525,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             setattr(args, k, False if k != "as_of" else None)
     try:
         return args.fn(args)
-    except ValueError as e:
-        print(f"오류: {e}")
+    except (UsageError, ValueError) as e:
+        print(f"오류: {e}", file=sys.stderr)
         return 3
 
 

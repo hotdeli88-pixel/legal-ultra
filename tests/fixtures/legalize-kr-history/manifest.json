@@ -1,0 +1,377 @@
+{
+ "source": "https://github.com/legalize-kr/legalize-kr",
+ "source_head": "3969940bf3522a7401d3cb96a45aa37da145a80a 2026-09-23",
+ "commits": [
+  {
+   "path": "kr/근로기준법/법률.md",
+   "snapshot": "versions/근로기준법/법률/19970313-00.md",
+   "date": "1997-03-13",
+   "subject": "법률: 근로기준법 (폐지)",
+   "source_commit": "cde5e5618cc2"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20140324-00.md",
+   "date": "2014-03-24",
+   "subject": "법률: 근로기준법 (일부개정)",
+   "source_commit": "1c9fc7e183db"
+  },
+  {
+   "path": "kr/개인정보보호법/법률.md",
+   "snapshot": "versions/개인정보보호법/법률/20160329-00.md",
+   "date": "2016-03-29",
+   "subject": "법률: 개인정보 보호법 (일부개정)",
+   "source_commit": "c2df7314f933"
+  },
+  {
+   "path": "kr/개인정보보호법/법률.md",
+   "snapshot": "versions/개인정보보호법/법률/20170418-01.md",
+   "date": "2017-04-18",
+   "subject": "법률: 개인정보 보호법 (일부개정)",
+   "source_commit": "a4d4f546eba0"
+  },
+  {
+   "path": "kr/개인정보보호법/법률.md",
+   "snapshot": "versions/개인정보보호법/법률/20170726-02.md",
+   "date": "2017-07-26",
+   "subject": "법률: 개인정보 보호법 (타법개정)",
+   "source_commit": "93efc2f55bff"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20171128-01.md",
+   "date": "2017-11-28",
+   "subject": "법률: 근로기준법 (일부개정)",
+   "source_commit": "76b9b6f5539c"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20180320-02.md",
+   "date": "2018-03-20",
+   "subject": "법률: 근로기준법 (일부개정)",
+   "source_commit": "1f1a201b484c"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20190115-03.md",
+   "date": "2019-01-15",
+   "subject": "법률: 근로기준법 (일부개정)",
+   "source_commit": "97957a1c7d75"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20190115-04.md",
+   "date": "2019-01-15",
+   "subject": "법률: 근로기준법 (타법개정)",
+   "source_commit": "d6ffe1965240"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20190430-05.md",
+   "date": "2019-04-30",
+   "subject": "법률: 근로기준법 (타법개정)",
+   "source_commit": "668216b6a884"
+  },
+  {
+   "path": "kr/개인정보보호법/법률.md",
+   "snapshot": "versions/개인정보보호법/법률/20200204-03.md",
+   "date": "2020-02-04",
+   "subject": "법률: 개인정보 보호법 (일부개정)",
+   "source_commit": "27ed1db7372a"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20200331-06.md",
+   "date": "2020-03-31",
+   "subject": "법률: 근로기준법 (일부개정)",
+   "source_commit": "360d6c81eece"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20200526-07.md",
+   "date": "2020-05-26",
+   "subject": "법률: 근로기준법 (타법개정)",
+   "source_commit": "b2f4792b887d"
+  },
+  {
+   "path": "kr/형법/법률.md",
+   "snapshot": "versions/형법/법률/20201208-00.md",
+   "date": "2020-12-08",
+   "subject": "법률: 형법 (일부개정)",
+   "source_commit": "f1c85b3bf441"
+  },
+  {
+   "path": "kr/상법/법률.md",
+   "snapshot": "versions/상법/법률/20201229-00.md",
+   "date": "2020-12-29",
+   "subject": "법률: 상법 (일부개정)",
+   "source_commit": "8c85e0adf497"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20210105-08.md",
+   "date": "2021-01-05",
+   "subject": "법률: 근로기준법 (일부개정)",
+   "source_commit": "83b3430768d6"
+  },
+  {
+   "path": "kr/중대재해처벌등에관한법률/법률.md",
+   "snapshot": "versions/중대재해처벌등에관한법률/법률/20210126-00.md",
+   "date": "2021-01-26",
+   "subject": "법률: 중대재해 처벌 등에 관한 법률 (제정)",
+   "source_commit": "5b0745937ffd"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20210413-09.md",
+   "date": "2021-04-13",
+   "subject": "법률: 근로기준법 (일부개정)",
+   "source_commit": "92aa529e671a"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20210518-10.md",
+   "date": "2021-05-18",
+   "subject": "법률: 근로기준법 (일부개정)",
+   "source_commit": "7f96a0a3f9c4"
+  },
+  {
+   "path": "kr/민법/법률.md",
+   "snapshot": "versions/민법/법률/20221227-00.md",
+   "date": "2022-12-27",
+   "subject": "법률: 민법 (일부개정)",
+   "source_commit": "38b9167e604a"
+  },
+  {
+   "path": "kr/개인정보보호법/법률.md",
+   "snapshot": "versions/개인정보보호법/법률/20230314-04.md",
+   "date": "2023-03-14",
+   "subject": "법률: 개인정보 보호법 (일부개정)",
+   "source_commit": "95e5ffafef18"
+  },
+  {
+   "path": "kr/민법/법률.md",
+   "snapshot": "versions/민법/법률/20230516-01.md",
+   "date": "2023-05-16",
+   "subject": "법률: 민법 (타법개정)",
+   "source_commit": "35b84c3f697e"
+  },
+  {
+   "path": "kr/형법/법률.md",
+   "snapshot": "versions/형법/법률/20230808-01.md",
+   "date": "2023-08-08",
+   "subject": "법률: 형법 (일부개정)",
+   "source_commit": "ca4258355202"
+  },
+  {
+   "path": "kr/민법/법률.md",
+   "snapshot": "versions/민법/법률/20240920-02.md",
+   "date": "2024-09-20",
+   "subject": "법률: 민법 (일부개정)",
+   "source_commit": "2b09f2338dc7"
+  },
+  {
+   "path": "kr/상법/법률.md",
+   "snapshot": "versions/상법/법률/20240920-01.md",
+   "date": "2024-09-20",
+   "subject": "법률: 상법 (일부개정)",
+   "source_commit": "7c795bde3c87"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20241022-11.md",
+   "date": "2024-10-22",
+   "subject": "법률: 근로기준법 (일부개정)",
+   "source_commit": "adfa09397b34"
+  },
+  {
+   "path": "kr/도로교통법/법률.md",
+   "snapshot": "versions/도로교통법/법률/20250107-00.md",
+   "date": "2025-01-07",
+   "subject": "법률: 도로교통법 (일부개정)",
+   "source_commit": "cf333fa17543"
+  },
+  {
+   "path": "kr/도로교통법/법률.md",
+   "snapshot": "versions/도로교통법/법률/20250121-01.md",
+   "date": "2025-01-21",
+   "subject": "법률: 도로교통법 (타법개정)",
+   "source_commit": "b3aad53be628"
+  },
+  {
+   "path": "kr/근로기준법/시행령.md",
+   "snapshot": "versions/근로기준법/시행령/20250218-00.md",
+   "date": "2025-02-18",
+   "subject": "대통령령: 근로기준법 시행령 (일부개정)",
+   "source_commit": "ab4dde660af3"
+  },
+  {
+   "path": "kr/형법/법률.md",
+   "snapshot": "versions/형법/법률/20250318-02.md",
+   "date": "2025-03-18",
+   "subject": "법률: 형법 (일부개정)",
+   "source_commit": "89f9dafc0bb7"
+  },
+  {
+   "path": "kr/개인정보보호법/법률.md",
+   "snapshot": "versions/개인정보보호법/법률/20250401-05.md",
+   "date": "2025-04-01",
+   "subject": "법률: 개인정보 보호법 (일부개정)",
+   "source_commit": "6e50217a4c2e"
+  },
+  {
+   "path": "kr/도로교통법/법률.md",
+   "snapshot": "versions/도로교통법/법률/20250401-02.md",
+   "date": "2025-04-01",
+   "subject": "법률: 도로교통법 (일부개정)",
+   "source_commit": "0be8a7e9d147"
+  },
+  {
+   "path": "kr/근로기준법/시행령.md",
+   "snapshot": "versions/근로기준법/시행령/20250408-01.md",
+   "date": "2025-04-08",
+   "subject": "대통령령: 근로기준법 시행령 (일부개정)",
+   "source_commit": "3209615114d3"
+  },
+  {
+   "path": "kr/형법/법률.md",
+   "snapshot": "versions/형법/법률/20250408-03.md",
+   "date": "2025-04-08",
+   "subject": "법률: 형법 (일부개정)",
+   "source_commit": "19fdf28845d6"
+  },
+  {
+   "path": "kr/상법/법률.md",
+   "snapshot": "versions/상법/법률/20250722-02.md",
+   "date": "2025-07-22",
+   "subject": "법률: 상법 (일부개정)",
+   "source_commit": "0356427895e7"
+  },
+  {
+   "path": "kr/도로교통법/법률.md",
+   "snapshot": "versions/도로교통법/법률/20250814-03.md",
+   "date": "2025-08-14",
+   "subject": "법률: 도로교통법 (일부개정)",
+   "source_commit": "cd487301177a"
+  },
+  {
+   "path": "kr/상법/법률.md",
+   "snapshot": "versions/상법/법률/20250909-03.md",
+   "date": "2025-09-09",
+   "subject": "법률: 상법 (일부개정)",
+   "source_commit": "85c29cd119d5"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20251001-12.md",
+   "date": "2025-10-01",
+   "subject": "법률: 근로기준법 (타법개정)",
+   "source_commit": "4c740bf64fb2"
+  },
+  {
+   "path": "kr/주택임대차보호법/법률.md",
+   "snapshot": "versions/주택임대차보호법/법률/20251001-00.md",
+   "date": "2025-10-01",
+   "subject": "법률: 주택임대차보호법 (타법개정)",
+   "source_commit": "18d677d42ede"
+  },
+  {
+   "path": "kr/형법/법률.md",
+   "snapshot": "versions/형법/법률/20251223-04.md",
+   "date": "2025-12-23",
+   "subject": "법률: 형법 (일부개정)",
+   "source_commit": "d4909ea4b3bf"
+  },
+  {
+   "path": "kr/도로교통법/법률.md",
+   "snapshot": "versions/도로교통법/법률/20251230-04.md",
+   "date": "2025-12-30",
+   "subject": "법률: 도로교통법 (일부개정)",
+   "source_commit": "95ecd6863fbd"
+  },
+  {
+   "path": "kr/형법/법률.md",
+   "snapshot": "versions/형법/법률/20251231-05.md",
+   "date": "2025-12-31",
+   "subject": "법률: 형법 (일부개정)",
+   "source_commit": "607db3398a04"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20260219-13.md",
+   "date": "2026-02-19",
+   "subject": "법률: 근로기준법 (타법개정)",
+   "source_commit": "ee38b100f518"
+  },
+  {
+   "path": "kr/상법/법률.md",
+   "snapshot": "versions/상법/법률/20260306-04.md",
+   "date": "2026-03-06",
+   "subject": "법률: 상법 (일부개정)",
+   "source_commit": "b34bd8b9414d"
+  },
+  {
+   "path": "kr/개인정보보호법/법률.md",
+   "snapshot": "versions/개인정보보호법/법률/20260310-06.md",
+   "date": "2026-03-10",
+   "subject": "법률: 개인정보 보호법 (일부개정)",
+   "source_commit": "849122c05929"
+  },
+  {
+   "path": "kr/형법/법률.md",
+   "snapshot": "versions/형법/법률/20260312-06.md",
+   "date": "2026-03-12",
+   "subject": "법률: 형법 (일부개정)",
+   "source_commit": "dedabe90501b"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20260317-14.md",
+   "date": "2026-03-17",
+   "subject": "법률: 근로기준법 (타법개정)",
+   "source_commit": "7b19f6702172"
+  },
+  {
+   "path": "kr/민법/법률.md",
+   "snapshot": "versions/민법/법률/20260317-03.md",
+   "date": "2026-03-17",
+   "subject": "법률: 민법 (일부개정)",
+   "source_commit": "5de05dc6266e"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20260407-15.md",
+   "date": "2026-04-07",
+   "subject": "법률: 근로기준법 (일부개정)",
+   "source_commit": "1c16708e257b"
+  },
+  {
+   "path": "kr/도로교통법/법률.md",
+   "snapshot": "versions/도로교통법/법률/20260602-05.md",
+   "date": "2026-06-02",
+   "subject": "법률: 도로교통법 (일부개정)",
+   "source_commit": "8930bc0c7517"
+  },
+  {
+   "path": "kr/근로기준법/법률(법률).md",
+   "snapshot": "versions/근로기준법/법률(법률)/20260609-16.md",
+   "date": "2026-06-09",
+   "subject": "법률: 근로기준법 (일부개정)",
+   "source_commit": "19d824d5dccd"
+  },
+  {
+   "path": "kr/개인정보보호법/법률.md",
+   "snapshot": "versions/개인정보보호법/법률/20260908-07.md",
+   "date": "2026-09-08",
+   "subject": "법률: 개인정보 보호법 (일부개정)",
+   "source_commit": "d7cd2aaeef92"
+  },
+  {
+   "path": "kr/개인정보보호법/시행령.md",
+   "snapshot": "versions/개인정보보호법/시행령/20260910-00.md",
+   "date": "2026-09-10",
+   "subject": "대통령령: 개인정보 보호법 시행령 (일부개정)",
+   "source_commit": "0e778a82ed93"
+  }
+ ]
+}

@@ -201,11 +201,13 @@ def amendment_markers(text: str) -> List[Tuple[str, _dt.date]]:
     out: List[Tuple[str, _dt.date]] = []
     for m in _MARKER_RE.finditer(text):
         kind = m.group(1)
-        for d in _MARKER_DATE_RE.finditer(m.group(2)):
+        for i, d in enumerate(_MARKER_DATE_RE.finditer(m.group(2))):
             try:
-                out.append((kind, _dt.date(int(d.group(1)), int(d.group(2)), int(d.group(3)))))
+                dt = _dt.date(int(d.group(1)), int(d.group(2)), int(d.group(3)))
             except ValueError:
-                pass
+                continue
+            # '<신설 2020.3.31, 2026.6.9>' — 첫 날짜만 신설이고 뒤 날짜는 그 뒤의 개정이다
+            out.append((kind if (i == 0 or kind not in ("신설", "본조신설")) else "개정", dt))
     for m in _DELETE_RE.finditer(text):
         for d in _MARKER_DATE_RE.finditer(m.group(1)):
             try:
@@ -239,22 +241,57 @@ def normalize_for_match(text: str) -> str:
     return re.sub(r"\s+", "", s)
 
 
-def quote_found(quote: str, source_text: str) -> bool:
-    """인용문(말줄임표 허용)이 원문에 순서대로 들어 있는지."""
+# 생략(…)으로 건너뛴 구간에 이런 말이 있으면 뜻이 뒤집힐 수 있다('…있어야 하는 것은 아니지만 …' → '…있어야 하는 … 것이다')
+_NEGATION_RE = re.compile(r"아니|않|못|없|제외|금지|불가")
+_ELLIPSIS_RE = re.compile(r"\.{3,}|…|⋯|\(중략\)|\[중략\]|\(생략\)|\[생략\]")
+
+
+def quote_found(quote: str, source_text: str, max_gap: int = 300) -> bool:
+    """인용문이 원문에 있는지. 말줄임(…, ..., (중략))은 허용하되 남용을 막는다:
+    - 조각마다 정규화 6자 이상(짧은 조각을 흩뿌려 아무 문장이나 맞추는 것 차단)
+    - 조각 사이 생략 구간은 정규화 300자 이하
+    - 생략 구간에 부정·제외어(아니·않·못·없·제외·금지·불가)가 있으면 불인정"""
     src = normalize_for_match(source_text)
-    parts = [p for p in re.split(r"\.{3,}|…|⋯|\(중략\)|\[중략\]", quote or "") if p.strip()]
-    if not parts:
+    parts = [normalize_for_match(p) for p in _ELLIPSIS_RE.split(quote or "")]
+    parts = [p for p in parts if p]
+    if not parts or any(len(p) < 6 for p in parts):
         return False
-    pos = 0
-    for p in parts:
-        np_ = normalize_for_match(p)
-        if not np_:
-            continue
-        idx = src.find(np_, pos)
-        if idx < 0:
-            return False
-        pos = idx + len(np_)
-    return True
+
+    def match_from(k: int, prev_end: int) -> bool:
+        if k == len(parts):
+            return True
+        p = parts[k]
+        idx = src.find(p, prev_end)
+        while idx >= 0:
+            gap = src[prev_end:idx]
+            if len(gap) > max_gap:
+                return False
+            if not _NEGATION_RE.search(gap) and match_from(k + 1, idx + len(p)):
+                return True
+            idx = src.find(p, idx + 1)
+        return False
+
+    idx = src.find(parts[0])
+    while idx >= 0:          # 첫 조각이 여러 번 나오면 각 위치에서 시도한다
+        if match_from(1, idx + len(parts[0])):
+            return True
+        idx = src.find(parts[0], idx + 1)
+    return False
+
+
+_ZW_RE = re.compile("[\u200b\u200c\u200d\u2060\ufeff\u00ad]")
+_SPACES_RE = re.compile("[\u00a0\u2000-\u200a\u202f\u205f\u3000]")
+_FW_DIGITS = {ord("０") + i: ord("0") + i for i in range(10)}
+
+
+def prep_text(text: str) -> str:
+    """인용 추출 전 정리: 폭 없는 문자 제거, 특수 공백 → 공백, 전각 숫자 → 반각, 마크다운 굵게(**, __) 제거.
+    (‘근로기준법 제76조의<ZWSP>9’ 가 제76조로 읽히던 문제, **근로기준법** 제23조 가 특정불가가 되던 문제)"""
+    t = _ZW_RE.sub("", text or "")
+    t = _SPACES_RE.sub(" ", t)
+    t = t.translate(_FW_DIGITS)
+    t = t.replace("**", "").replace("__", "")
+    return t.replace("\r\n", "\n")
 
 
 # ---------------------------------------------------------------------------
